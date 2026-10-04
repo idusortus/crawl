@@ -1,0 +1,13 @@
+# cli-five mutable per-session memory (keep decisions.md tracked)
+STATE.md
+agent-diary.md
+histories/
+
+# cli-five Jev journal (runtime session churn — contains session ids/prompt fragments)
+.opencode/journals/
+
+# CodeGraph local index
+.codegraph/
+
+# Node
+node_modules/

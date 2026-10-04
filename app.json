@@ -3,9 +3,13 @@
     "name": "crawl",
     "slug": "crawl",
     "version": "0.1.0",
+    "scheme": "crawl",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "experiments": {
+      "typedRoutes": true
+    },
     "ios": {
       "supportsTablet": true
     },
@@ -22,6 +26,9 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-router"
+    ]
   }
 }

@@ -39,12 +39,12 @@ npm start         # expo start
 - Randomness is only ever drawn through the injected seeded RNG whose state travels in `GameState`. Same seed + same command sequence ⇒ identical outcome.
 - Content never lives in the engine. Content is data in `src/packs` (Stage 2+); M1 hardcodes fixtures only inside tests.
 
-## Out of Scope (through Milestone 1)
-- No UI, rendering, input, or Expo runtime wiring — the engine is headless.
-- No content packs or zod schemas (Stage 2).
-- No level generation or FOV (Stage 3).
-- No monster AI, combat, items, stairs, save/load I/O, or permadeath (Stage 6).
-- No ECS, scripting engine, event bus, or abstractions built ahead of a second use case.
+## Out of Scope (through Stage 5)
+- Engine changes driven by the client — the renderer consumes `@engine` only; determinism, framework-freedom, and content-as-data remain structural invariants.
+- Monster AI/spawning, combat, items (`use-item` UI), stairs, save/load I/O, and permadeath (Stage 6).
+- Skia/canvas rendering, a camera/scrolling, animation, or audio — the fixed 40×30 glyph grid is the v1 renderer.
+- A web target (`react-native-web`/`react-dom` + web bundler) — input/web-keyboard is a dev convenience only.
+- ECS, scripting engine, event bus, or abstractions built ahead of a second use case (the Stage 7 "dogs" pack is the abstraction-leak test).
 
 ## Success Criteria
 - A seeded engine test builds a fixed grid, applies a fixed command sequence, and reproduces the exact final state and event stream — including across a serialize/resume split.
@@ -56,9 +56,9 @@ npm start         # expo start
 1. **`bootstrap-engine-skeleton`** — pure-TS grid, entities, seeded RNG, `applyCommand → events`, event log, Vitest. *(complete)*
 2. **`content-packs-v1`** — pack loader + zod schema; tiny fantasy pack; `use-item` command/event drawing from the injected RNG. *(complete)*
 3. **`levelgen-and-fov`** — seeded BSP level generation + named-generator registry, recursive-shadowcasting FOV, stored explored mask, deterministic `descend`. *(complete)*
-4. **APK pipeline** — build/CI change to produce an installable Android APK. *(in progress — workflow authored and locally verified; the first live tag run is the authoritative build check)*
-5. `expo-glyph-renderer` — Expo Router shell + glyph renderer + input mapping.
-6. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load.
+4. **APK pipeline** — build/CI change to produce an installable Android APK. *(complete — workflow authored and locally verified; the first live `v*` tag run is the authoritative on-device check)*
+5. **`expo-glyph-renderer`** — Expo Router shell + glyph renderer + input mapping. *(complete)*
+6. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load. *(next)*
 7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test).
 
 ---

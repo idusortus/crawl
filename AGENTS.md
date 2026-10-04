@@ -6,7 +6,7 @@ This file is the tool-agnostic project context. Codex, Cursor, Aider, Gemini CLI
 and Copilot all read `AGENTS.md` per the [agents.md](https://agents.md) convention.
 
 ## Goal
-Keep determinism, framework-freedom, and content-agnosticism as *structural* invariants of `src/engine`, so that whole settings (fantasy, sci-fi, "family dog") are swappable data packs rather than engine forks. Milestone 1 ships a headless engine only — no UI — so the boundary is proven before a renderer can blur it.
+Keep determinism, framework-freedom, and content-agnosticism as *structural* invariants of `src/engine`, so that whole settings (fantasy, sci-fi, "family dog") are swappable data packs rather than engine forks. The headless engine was proven first (Stages 1–3); Stage 5 adds the Expo Router client that consumes it — a renderer can no longer blur the boundary because `src/engine/**` was never edited to make the UI fit.
 
 ## Stack
 - **Expo SDK** ~57.0.26 + **React Native** 0.86.3 + **React** 19.2.3 (New Architecture)
@@ -15,7 +15,7 @@ Keep determinism, framework-freedom, and content-agnosticism as *structural* inv
 - Bundler-driven (Metro); no browser CDN scripts.
 
 ## Frameworks / Key Libraries
-- expo / expo-router — app shell and (later) routing
+- expo / expo-router — app shell and file-based routing (Stage 5)
 - Vitest 5 — engine tests (`environment: 'node'`, `vite-tsconfig-paths` for `@engine`)
 - ESLint 9 flat config (`eslint-config-expo/flat` + `typescript-eslint`) — enforces the engine boundary
 - zod — content-pack schemas (Stage 2, now a direct dependency)
@@ -31,11 +31,11 @@ Keep determinism, framework-freedom, and content-agnosticism as *structural* inv
 - **Behaviors by named id** (later stages): AI/behaviors will be looked up by a named registry id rather than engine-embedded closures.
 - **Import through the public surface.** Outside `src/engine`, import only from `@engine` (`src/engine/index.ts`) — never a deeper module.
 
-For the full staged roadmap, see `PROJECT.md`. Stages 1–3 (`bootstrap-engine-skeleton`, `content-packs-v1`, `levelgen-and-fov`) are complete. The **APK pipeline** change (produce an installable Android APK) is in progress — workflow authored, pending its first live tag run — before Stage 5 (`expo-glyph-renderer`).
+For the full staged roadmap, see `PROJECT.md`. Stages 1–4 (`bootstrap-engine-skeleton`, `content-packs-v1`, `levelgen-and-fov`, the APK pipeline) are complete, and Stage 5 (`expo-glyph-renderer`) is complete — the app now boots into a playable glyph screen as a pure `@engine` client. The next stage is Stage 6 (`core-gameplay-loop`): AI, combat, items, stairs, permadeath, save/load.
 
 ## Constraints
-- Do not add features ahead of the current stage (no levelgen/FOV/AI/combat/render until their stage).
-- Do not weaken the `src/engine` purity rules to make a feature fit; treat any needed engine change from a new pack as an abstraction leak to fix.
+- Do not add features ahead of the current stage (no AI/combat until Stage 6; no second pack until Stage 7).
+- Do not weaken the `src/engine` purity rules to make a feature fit; treat any needed engine change from a new pack as an abstraction leak to fix. Stage 5 proved a real client can consume `@engine` with zero engine edits — keep it that way.
 
 ## Workflow
 1. Read `PROJECT.md` for the long-form vision.

@@ -12,6 +12,57 @@
 
 ---
 
+## 2026-10-04 — Stage 5 (`expo-glyph-renderer`) outcome
+
+**Context:** Stage 5 turned the headless engine into a playable phone app and needed its UI choices locked as the operating model for later stages. All were settled across Phases 1–5 (design D1–D8), applied, reviewed (pre-apply review NEEDS REVISION → 12 findings fixed; post-apply review PASS WITH NOTES), and verified. The engine boundary held: `src/engine/**` and `src/packs/**` were untouched.
+
+**Choice:**
+- **App shell is Expo Router with routes under `src/app`.** `package.json` `main` → `expo-router/entry`; `app.json` gains `scheme: "crawl"` + `experiments.typedRoutes: true`; `src/app/_layout.tsx` wraps `<Slot/>` in `<GameProvider>` inside `<SafeAreaProvider>`; `src/app/index.tsx` renders `<GameScreen/>`. The dead `App.tsx`/`index.ts` (`registerRootComponent`) were deleted in the same change.
+- **Renderer is memoized RN `<Text>` tiles in a fixed flex grid — no Skia/canvas.** Each of the 1,200 (40×30) cells is a `React.memo`'d `Tile` with primitive props, laid out flex-wrap; `MapView` derives FOV per render (`computeFov` in a `useMemo` keyed `[state, player]`) and reads `state.explored` directly.
+- **Input is an on-screen D-pad + Descend, with web-only keyboard.** `Dpad`/`ActionBar` are stateless pure dispatchers reading `useGameContext()`; `useKeyboardInput` is gated by `Platform.OS !== 'web'` (never touches `window` on native) and factors the mapping into the pure `commandForKey(key)`.
+- **Client state is a React reducer/context holding `GameState` + `LoadedPack`.** `useGame` performs one lazy startup load (`loadPack(fantasyPack)` then `createInitialState(seed, pack)` in a try/catch, `error` as a value); `dispatch` runs `applyCommandWithPack(state, command, rngFromState(state.rng), pack)` and replaces state immutably. `useGame.ts` is the single production call site. The engine is untouched.
+- **Visibility is derived (FOV) / explored is stored.** The renderer computes visibility each render; `state.explored` is the persistent monotonic mask OR-ed at startup and on `descend` via `exploreInto`.
+- **Every pack glyph lookup is fallible with a safe `?` fallback.** `entityGlyph` tries `pack.class`→`monster`→`item` each in a try/catch and returns `UNKNOWN_GLYPH = '?'` on a miss (the loader throws `UnknownContentIdError`), so an unknown kind renders, never crashes. Unseen tiles short-circuit to a blank glyph so occupancy cannot leak.
+- **Bare `@engine` path added to `tsconfig.json` for both tsc and Vitest.** `"@engine": ["./src/engine/index.ts"]` fixes the TS2307 the `"@engine/*"` glob could not; `vite-tsconfig-paths` reads the same `paths`, so no separate Vitest alias.
+
+**Trade-offs:** Trying all three collections per entity does up to three `Map` lookups for an unknown kind (acceptable at 1,200 cells, removed from the hot path by memoizing the resolved cell array) and assumes ids are unique across collections (the loader only rejects duplicates *within* a collection; no current pack collides). `useGameContext()` throws without a provider — deliberate fail-fast. The fixed 40×30 grid has no camera; larger maps would not fit. Web is not a supported target this stage (needs `react-native-web`/`react-dom` + a web bundler); the keyboard is a dev convenience. `commandForKey` is exported but untested (no DOM test stack).
+
+**Revisit:** If tile count grows or per-input re-render cost is measured, revisit the memoization strategy or virtualize; if a camera/scrolling is needed for larger maps, add it to `MapView` without touching state. If the pack schema ever permits cross-collection id collisions, `entityGlyph` needs an explicit `kind → collection` hint instead of trial lookup. If a React render-test stack or DOM env lands, assert `commandForKey` and the native no-op directly; if the web target becomes required, add the web deps and a bundler first. Otherwise never — this is the Stage-5 renderer/input/state contract.
+
+---
+
+
+**Context:** Phase 4 of `expo-glyph-renderer` (tasks 4.1–4.3) adds the input layer: on-screen D-pad + Descend plus a web-only keyboard hook. Design D3 fixes the shape (four direction buttons → `move`, one button → `descend`, keyboard as a web dev convenience, every path through the hook's `dispatch`). Three sub-choices were open: how the components read the dispatcher, how the keyboard mapping is factored, and how the hook avoids touching `window` on native.
+
+**Choice:**
+- **`Dpad`/`ActionBar` consume `useGameContext()` directly and are stateless.** Each is a pure dispatcher: `onPress={() => dispatch({ type: 'move', direction })}` / `dispatch({ type: 'descend' })`. No local state, no `GameState` access, no engine import beyond the `Direction`/`Command` types. This keeps every input path funneled through the one production `dispatch` in `useGame` (the container/presentational split was unnecessary for four buttons).
+- **Keyboard mapping is a pure exported helper `commandForKey(key)`.** It maps `ArrowUp/Down/Right/Left` → the four directions and `Enter`/`>` → descend, returning `Command | undefined`. Factoring the mapping out of the effect makes it scannable and unit-testable without a DOM; the hook only wires `keydown` → `commandForKey` → `dispatch`.
+- **Web gate is `Platform.OS !== 'web'` with an early `return undefined` from the effect.** `window` is referenced only inside the web branch, so a native bundle never evaluates it (`useKeyboardInput` cannot crash off-web). The handler calls `event.preventDefault()` so arrows don't scroll and Enter doesn't submit.
+- **Both buttons call `accessibilityRole="button"` + `accessibilityLabel`** (arrow glyphs/`Descend` are not self-describing). Press feedback uses the `style={({ pressed }) => [...]}` callback form.
+
+**Trade-offs:** `useGameContext()` throws without a provider, so Dpad/ActionBar inherit the same fail-fast behavior as Hud/MapView — deliberate. Reading context twice (screen + each child) is cheap. `commandForKey` is exported but untested this phase (no DOM test stack; the APK run covers interaction) — the pure helper is ready for a test when one is added.
+
+**Revisit:** If a React render-test stack or a DOM test environment lands, assert `commandForKey` and the effect's native no-op directly. If input needs remapping/multiple keymaps, promote `ARROW_DIRECTIONS`/`DESCEND_KEYS` to config. Otherwise never — dispatch-only components + a web-gated keyboard hook are the operating input model.
+
+---
+
+## 2026-10-04 — Client state model: one lazy startup load, error-as-value, `useGameContext` guard
+
+**Context:** Phase 2 of `expo-glyph-renderer` (tasks 2.1–2.4) builds the client state model (`createInitialState`, `useGame`, `GameProvider`). Design D4/D7 fixes the essential contract (pack loads first, player seeded from `pack.class('fighter')`, RNG captured after `generateLevel`, dispatch via `applyCommandWithPack` deriving the RNG from `state.rng`), but three sub-choices were left open: how the hook represents a recoverable pack-load failure, how many times the startup load runs, and what the context consumer does without a provider.
+
+**Choice:**
+- **`createInitialState` owns all initial-state assembly.** Constants `PLAYER_CLASS_ID = 'fighter'` and `PLAYER_ID = 'player'` are exported (they are the renderer's lookup keys too), while `LEVEL_WIDTH/HEIGHT/DEPTH` stay module-private (they are an implementation detail matching the engine's descend size; nothing outside needs them). Imports only from `@engine` and receives the pack as a parameter.
+- **`useGame` performs one lazy startup load and stores an `{ state?, pack?, error? }` result.** A single `useState(() => loadGame(seed))` initializer calls `loadPack(fantasyPack)` then `createInitialState(seed, pack)` in a try/catch, so the pack is loaded and the level generated **exactly once** and any throw becomes a value. An earlier draft used two `useState` initializers (one for game, one for error), which loaded the pack and generated the level twice and could in principle disagree; consolidated to one.
+- **`GameError = Error`.** `loadPack` throws `PackLoadError`/`UnknownContentIdError`, both `Error` subclasses, and a non-`Error` throw is wrapped with `new Error(String(caught))`. The alias documents the two typed errors in its JSDoc rather than a three-way union, keeping the consumer's render path (`error.message`) valid for every case.
+- **`dispatch` never calls `Math.random`/`Date`; it derives `rngFromState(current.state.rng)` per command** and replaces only `state` in the startup result, leaving `pack`/`error` stable. This is the single production call site of `applyCommandWithPack` in `src/ui` (the test file calls it only to assert the immutable-dispatch contract).
+- **`GameProvider` exposes a typed context and `useGameContext()` throws** when called outside a provider, so a missing provider fails immediately at the misuse site instead of yielding `undefined` and failing later.
+
+**Trade-offs:** `useGameContext()` throwing means a component rendered outside the provider crashes its render rather than degrading — deliberate, since a missing provider is a programming error, not a runtime state. Holding `error` inside the same startup object means `dispatch` carries it through on every update (`{ ...current, state }`), a tiny per-dispatch spread cost. `state`/`pack` are `undefined` in the error case, so every consumer must narrow before use; the screen renders `error` first, which is the intended D7 flow.
+
+**Revisit:** If seed selection or multiple runs land, `useGame` needs a `reset(seed)`/`newGame` action rather than a single immutable startup load. If a React render-test stack is added, the provider/consumer split can be tested directly. Otherwise never — the lazy-load + error-as-value shape is the operating model for this stage.
+
+---
+
 ## 2026-10-04 — APK pipeline: local Gradle on the runner, debug-keystore signing, tag + dispatch triggers
 
 **Context:** After Stage 3 the user queued a build/CI change to produce an installable Android APK before further engine work. Three choices were locked with the user before writing the change: how to build (EAS cloud vs. local Gradle), how to sign, and how to trigger. The change is tooling/CI only, so it carries `skip_specs: true` (no behavior change, no spec deltas).
@@ -247,3 +298,39 @@
 
 
 
+
+---
+
+## 2026-10-04 — Stage 5 app shell: Expo Router with a bare `@engine` path entry, dead entry points deleted
+
+**Context:** Stage 5 is the first real UI. It needs an app shell that boots straight into the game, while preserving the engine boundary (UI imports only from `@engine`) and the determinism contract (client threads the RNG from `state.rng`, never an ambient generator). The pre-existing shell was a dead placeholder: `index.ts` → `registerRootComponent(App)` with `App.tsx`, and `package.json` `main: "index.ts"`. Separately, the project documents `@engine` as the single public import specifier, but the existing `"@engine/*"` glob matches only subpaths, so a bare `import { … } from '@engine'` failed `tsc` with TS2307. Phase 1 (this entry) settles the shell/entry/config questions; Phases 2–4 add the state model, renderer, and input.
+
+**Choice:**
+- **App shell is Expo Router.** `package.json` `main` → `expo-router/entry`; routes live under `src/app/` (`src/app/_layout.tsx`, `src/app/index.tsx`). `expo-router`, `react-native-safe-area-context`, `react-native-screens`, `expo-linking`, `expo-constants` installed via `npx expo install` (SDK-57-pinned versions). Chosen over keeping the manual `registerRootComponent` root because file-based routing is the locked Stage-5 direction and the documented Expo SDK 57 path; `src/app/` (not root `app/`) because the project colocates source under `src/`.
+- **`app.json` gains `scheme: "crawl"` + `experiments.typedRoutes: true`.** `typedRoutes` is a convenience only — route types are generated to gitignored `.expo/types` after a dev-server/prebuild run, so a clean-checkout `tsc --noEmit` does not require them (verified). `npx expo install` also auto-added the `expo-router` config plugin (`plugins: ["expo-router"]`), which is required for native registration.
+- **`tsconfig.json` gains the exact `"@engine": ["./src/engine/index.ts"]` path.** It is added once and fixes **both** resolvers — `tsc` via `paths` and Vitest via `vite-tsconfig-paths`. A bare `@engine` import is now resolvable; no separate Vitest alias. This is config-only; `src/engine/**` is byte-for-byte untouched.
+- **`App.tsx`, `index.ts`, and `src/app/.gitkeep` are deleted.** Once `expo-router/entry` is `main`, `registerRootComponent` is dead code. Deletion ships in the same change as the `main` swap, so nothing references the removed files (verified by grep across the tree excluding `node_modules`).
+- **Route shell is minimal.** `_layout.tsx` wraps `<Slot />` in `<SafeAreaProvider>`; a later phase adds the `GameProvider`. `index.tsx` is a placeholder `<View><Text>crawl</Text></View>` that a later phase replaces with `<GameScreen />`. No `src/ui/**` files are created in Phase 1.
+
+**Trade-offs:** `npx expo install` mutates `app.json` (adds the plugin) as a side effect of installing, so the config diff is larger than the two fields hand-added. `typedRoutes` may need to be dropped if route-type generation ever disrupts a clean `tsc`. Web is not a required check this stage (needs `react-native-web`/`react-dom` + a web bundler); verification is `tsc`/unit tests/lint plus the pre-tag `npx expo export --platform android` bundling gate.
+
+**Revisit:** If `typedRoutes` causes a clean-checkout `tsc` failure, remove the `experiments.typedRoutes` flag (the renderer does not depend on it). If a second route or a nested layout appears, switch the single `Slot` for a `<Stack />`. When a web target becomes required, add `react-native-web`/`react-dom` and a web bundler before re-enabling `npm run web` as a check. Otherwise never — Expo Router is the operating shell.
+
+---
+
+## 2026-10-04 — Stage 5 Phase 3: glyph resolution is a pure, pack-sourced lookup with safe fallbacks
+
+**Context:** The renderer needs to turn `(tile passability, visibility mask, explored mask, optional occupant)` into a glyph + color for 1,200 cells. Entity glyphs live in the pack's `glyph` fields, but the `LoadedPack` accessors (`class`/`monster`/`item`) **throw** `UnknownContentIdError` on a miss rather than returning `undefined`, so any code path that resolves an entity kind the pack does not define would crash the screen. The client must also never mutate `GameState` and must keep visibility derived, not stored.
+
+**Choice:**
+- **Glyph logic is a framework-free module (`src/ui/logic/glyphs.ts`).** No React/RN import, so it is unit-testable under the existing node Vitest environment; the pack lookups are separated from layout and color.
+- **Every pack lookup is wrapped and falls back to `'?'`.** `entityGlyph(pack, entity)` tries `class`→`monster`→`item` (an `Entity` carries only `kind`, not its source collection), each in a `try/catch`; a miss returns `UNKNOWN_GLYPH = '?'`. The resolver never throws (design D6).
+- **Terrain convention is documented in-code:** passable ⇒ `.` (`FLOOR_GLYPH`), non-passable ⇒ `#` (`WALL_GLYPH`).
+- **Visibility is a three-way category, visible > explored > unseen**, via `visibilityCategory`/`visibilityStyle`; unseen tiles short-circuit in `tileRender` to a blank glyph (`UNSEEN_GLYPH = ' '`) and the unseen background, so an occupant cannot leak through an unseen tile.
+- **`tileRender` is the single `{ glyph, color, backgroundColor }` entry point** consumed by `Tile`/`MapView`. Colors come from `src/ui/theme/colors.ts` (plain hex, no React import): `visible`/`explored`/`unseen` treatments plus terrain/player/entity accents.
+- **`MapView` derives FOV per render** with `computeFov(state.grid, player.pos, DEFAULT_SIGHT_RADIUS)` inside a `useMemo` keyed on `[state, player]`, reads `state.explored` directly, iterates via `forEachCoord`, and renders a fixed `width*TILE_SIZE × height*TILE_SIZE` flex-wrap grid of `React.memo`'d `Tile`s whose props are primitives only (so memoization is effective). Player is found with `entityById(state.entities, state.playerId)`.
+- **`_layout.tsx` mounts `GameProvider` inside `SafeAreaProvider`**, wrapping `<Slot />`; `src/app/index.tsx` renders `<GameScreen />`, which composes `<Hud />` + `<MapView />` and renders the recoverable `error.message` surface instead of the map when the provider captured a pack-load failure (design D7). An empty `inputSlot` View is left below the map for Phase 4's controls.
+
+**Trade-offs:** Trying all three collections per entity is O(1)-ish (`Map` lookups) but does up to three failed lookups for an unknown kind — acceptable for 1,200 cells and removed from the hot path by memoizing the whole cell array. Resolving entity kind by trial across collections assumes ids are unique (the loader already rejects duplicate ids *within* a collection, not across them) — a cross-collection id collision would resolve to `class` first; no current pack has one. Seeding the resolved cell array as a fresh `Cell[]` per state change means `Tile` memoization is only as good as primitive prop equality, which is why `Tile`'s props are primitives.
+
+**Revisit:** If a tile ever needs more than one glyph (e.g. items stacked on terrain), replace the single-glyph `TileRender` with a small cell model — do not add a second resolver. If the pack schema ever allows cross-collection id collisions, `entityGlyph` needs an explicit `kind → collection` hint rather than trial lookup. Otherwise never — the fallback + derived-visibility model is the operating renderer contract.

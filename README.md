@@ -48,7 +48,7 @@ The loop is **command-in / event-out** (`applyCommand(state, command, rng) -> { 
 
 The engine is **pure**: it must never import `react`/`react-native`/`expo`, and must never use `Math.random`/`Date.now`/`Date`. Determinism comes from an injected seeded RNG whose state travels inside `GameState` (`{ seed, state }`). ESLint fails CI on any violation under `src/engine/**`. The app's placeholder entry (`App.tsx`) merely proves Expo boots.
 
-> Scope: this milestone ships the Expo/TS scaffold + tooling and the engine core — seeded RNG, 2D grid + occupancy, JSON-clean types, and the command loop with `move` resolution. Rendering, level generation, AI, and content packs are later stages.
+> Scope: this milestone ships the Expo/TS scaffold + tooling, the engine core (seeded RNG, 2D grid + occupancy, JSON-clean types, command loop with `move` resolution), and a versioned content-pack schema/loader with the first real pack. Rendering, level generation, AI, and a content-driven `use-item` command are later stages.
 
 ## Layout
 
@@ -64,9 +64,12 @@ crawl/
       grid.ts      # grid + passability + occupancy helpers
       events.ts    # event constructors + append-only log helper
       commands.ts  # applyCommand: move -> moved/blocked/noop
+      pack.ts      # loadPack: validate + composition floor + id lookup
+      schema/      # zod pack schema (Pack/PackClass/PackMonster/PackItem/ItemEffect)
       index.ts     # public surface (@engine) — import here, not deeper
       __tests__/
-    packs/  # content packs (Stage 2+, empty)
+    packs/  # content packs (data only)
+      fantasy/   # pack.json + thin TS entry + tests (2 classes, 3 monsters, 5 items)
     ui/     # React Native components (Stage 4+, empty)
   openspec/  # change proposals & specs
 ```

@@ -63,8 +63,21 @@ export interface MoveCommand {
   direction: Direction;
 }
 
+/**
+ * A command to use an item, named by id (change `content-packs-v1`, D7).
+ *
+ * The command carries only the id — content is never embedded in state or in
+ * the command (design D1). Resolving the id to an effect requires a loaded
+ * pack, so `use-item` is handled by the pack-aware command entry point; `move`
+ * continues to resolve without a pack (design D6).
+ */
+export interface UseItemCommand {
+  type: 'use-item';
+  itemId: string;
+}
+
 /** Every command the engine understands. Extended as new actions land. */
-export type Command = MoveCommand;
+export type Command = MoveCommand | UseItemCommand;
 
 /** Emitted when an entity successfully steps into a new tile. */
 export interface MovedEvent {
@@ -87,8 +100,29 @@ export interface NoopEvent {
   reason: string;
 }
 
+/**
+ * Emitted when an entity successfully uses an item (change `content-packs-v1`,
+ * D7). Carries the acting entity, the item id, and the effect that was applied
+ * as plain data, so it is fully serializable and records the actual outcome
+ * (e.g. the rolled heal amount, not the range).
+ *
+ * `effect` mirrors `AppliedEffect` from `effects.ts` structurally. It is
+ * inlined here rather than imported to keep `types.ts` dependency-free — the
+ * engine's type module must not import the effect module (or vice versa).
+ */
+export interface ItemUsedEvent {
+  type: 'item-used';
+  actorId: string;
+  itemId: string;
+  effect: { kind: string; amount: number };
+}
+
 /** Discriminated union of everything a command can report (design D3). */
-export type GameEvent = MovedEvent | BlockedEvent | NoopEvent;
+export type GameEvent =
+  | MovedEvent
+  | BlockedEvent
+  | NoopEvent
+  | ItemUsedEvent;
 
 /**
  * The complete, JSON-serializable game state.

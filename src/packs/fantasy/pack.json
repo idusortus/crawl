@@ -1,0 +1,73 @@
+{
+  "id": "fantasy",
+  "name": "Fantasy",
+  "version": 1,
+  "classes": [
+    {
+      "id": "fighter",
+      "name": "Fighter",
+      "glyph": "@",
+      "hp": 14,
+      "description": "A sturdy front-line warrior."
+    },
+    {
+      "id": "rogue",
+      "name": "Rogue",
+      "glyph": "R",
+      "hp": 9,
+      "description": "A quick, lightly-armored scrapper."
+    }
+  ],
+  "monsters": [
+    {
+      "id": "goblin",
+      "name": "Goblin",
+      "glyph": "g",
+      "hp": 5
+    },
+    {
+      "id": "giant-rat",
+      "name": "Giant Rat",
+      "glyph": "r",
+      "hp": 3
+    },
+    {
+      "id": "skeleton",
+      "name": "Skeleton",
+      "glyph": "s",
+      "hp": 8
+    }
+  ],
+  "items": [
+    {
+      "id": "healing-potion",
+      "name": "Healing Potion",
+      "glyph": "!",
+      "effect": { "kind": "heal", "amount": 8 }
+    },
+    {
+      "id": "bandage",
+      "name": "Bandage",
+      "glyph": "=",
+      "effect": { "kind": "heal", "amount": 3 }
+    },
+    {
+      "id": "elixir",
+      "name": "Elixir",
+      "glyph": "&",
+      "effect": { "kind": "roll-heal", "min": 4, "max": 10 }
+    },
+    {
+      "id": "wild-herb",
+      "name": "Wild Herb",
+      "glyph": "%",
+      "effect": { "kind": "roll-heal", "min": 1, "max": 4 }
+    },
+    {
+      "id": "sacred-relic",
+      "name": "Sacred Relic",
+      "glyph": "$",
+      "effect": { "kind": "heal", "amount": 20 }
+    }
+  ]
+}

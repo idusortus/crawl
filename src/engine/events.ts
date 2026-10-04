@@ -13,6 +13,7 @@ import type {
   BlockedEvent,
   Direction,
   GameEvent,
+  ItemUsedEvent,
   MovedEvent,
   NoopEvent,
   Position,
@@ -43,6 +44,26 @@ export function blocked(
 /** Creates a `noop` event for a command that had no world effect. */
 export function noop(reason: string): NoopEvent {
   return { type: 'noop', reason };
+}
+
+/**
+ * Creates an `item-used` event reporting the acting entity, the item id, and
+ * the plain-data effect that was applied (change `content-packs-v1`, D7).
+ *
+ * The effect is copied field-by-field into a fresh object so callers cannot
+ * alias or mutate it through the event (matching `moved`'s position copying).
+ */
+export function itemUsed(
+  actorId: string,
+  itemId: string,
+  effect: { kind: string; amount: number },
+): ItemUsedEvent {
+  return {
+    type: 'item-used',
+    actorId,
+    itemId,
+    effect: { kind: effect.kind, amount: effect.amount },
+  };
 }
 
 /**

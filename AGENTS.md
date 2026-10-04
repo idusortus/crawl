@@ -18,23 +18,23 @@ Keep determinism, framework-freedom, and content-agnosticism as *structural* inv
 - expo / expo-router — app shell and (later) routing
 - Vitest 5 — engine tests (`environment: 'node'`, `vite-tsconfig-paths` for `@engine`)
 - ESLint 9 flat config (`eslint-config-expo/flat` + `typescript-eslint`) — enforces the engine boundary
-- zod (planned, Stage 2) — content-pack schemas
+- zod — content-pack schemas (Stage 2, now a direct dependency)
 
 ## Engine boundary rules (the important part)
 `src/engine` is the whole product; everything else is a client of it. These rules are enforced and must not be relaxed:
 
 - **Pure TypeScript.** No `react`, `react-native`, or `expo*` imports. No `Math.random`, `Date.now`, or `Date`. ESLint on `src/engine/**` fails CI on any of these.
-- **Command-in / event-out.** The only way to advance the game is `applyCommand(state, command, rng) -> { state, events }`. It returns a **new** state; the input is never mutated. Every command emits ≥ 1 event.
+- **Command-in / event-out.** The content-free entry point is `applyCommand(state, command, rng) -> { state, events }`; content-dependent commands (`use-item`) go through `applyCommandWithPack(state, command, rng, pack)`. Both return a **new** state; the input is never mutated. Every command emits ≥ 1 event.
 - **JSON-serializable state.** `GameState` contains only plain data — no classes, `Map`, `Set`, functions, or meaningful `undefined`. Save/replay/undo are serialization plus the command log.
 - **Injected seeded RNG.** All randomness flows through an `Rng` created from state and written back into state (`{ seed, state }`). Same seed + same commands ⇒ identical outcome.
-- **Content is data, never code.** Content will live in `src/packs` (Stage 2+); the engine references content only by id/kind. M1 hardcodes fixtures inside tests only.
+- **Content is data, never code.** Content lives in `src/packs` (Stage 2+) as versioned pack data, validated through `loadPack`/`validatePack` and referenced by id/kind only. The engine never embeds content; `GameState` stores ids, never resolved entries. Effect behavior is a named registry lookup (`effectRegistry`), never pack-supplied logic.
 - **Behaviors by named id** (later stages): AI/behaviors will be looked up by a named registry id rather than engine-embedded closures.
 - **Import through the public surface.** Outside `src/engine`, import only from `@engine` (`src/engine/index.ts`) — never a deeper module.
 
-For the full staged roadmap, see `PROJECT.md`.
+For the full staged roadmap, see `PROJECT.md`. Stage 1 (`bootstrap-engine-skeleton`) and Stage 2 (`content-packs-v1`) are complete; Stage 3 (`levelgen-and-fov`) is next.
 
 ## Constraints
-- Do not add features ahead of the current stage (no levelgen/AI/combat/render/packs until their stage).
+- Do not add features ahead of the current stage (no levelgen/FOV/AI/combat/render until their stage).
 - Do not weaken the `src/engine` purity rules to make a feature fit; treat any needed engine change from a new pack as an abstraction leak to fix.
 
 ## Workflow

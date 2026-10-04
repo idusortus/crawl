@@ -215,6 +215,59 @@ describe('malformed command handling', () => {
     expect(events).toEqual([noop('unknown-command:teleport')]);
   });
 
+  it('rejects a move with an unknown direction as a single noop without throwing', () => {
+    const before = makeState();
+    const rng = createRng(before.rng.seed);
+
+    let result!: ReturnType<typeof applyCommand>;
+    expect(() => {
+      result = applyCommand(
+        before,
+        { type: 'move', direction: 'northwest' } as any,
+        rng,
+      );
+    }).not.toThrow();
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]).toEqual(noop('malformed-command'));
+    // World state is equivalent to the input, log appended.
+    expect(result.state.grid).toEqual(before.grid);
+    expect(result.state.entities).toEqual(before.entities);
+    expect(result.state.playerId).toBe(before.playerId);
+    expect(result.state.rng).toEqual(before.rng);
+    expect(result.state.events).toEqual(before.events.concat(result.events));
+    expect(result.state.events).toHaveLength(before.events.length + 1);
+  });
+
+  it('rejects a move with a missing direction as a single noop without throwing', () => {
+    const before = makeState();
+    const rng = createRng(before.rng.seed);
+
+    let result!: ReturnType<typeof applyCommand>;
+    expect(() => {
+      result = applyCommand(before, { type: 'move' } as any, rng);
+    }).not.toThrow();
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]).toEqual(noop('malformed-command'));
+    expect(result.state.entities).toEqual(before.entities);
+    expect(result.state.rng).toEqual(before.rng);
+  });
+
+  it('still resolves a valid move after the parameter guard', () => {
+    const before = makeState();
+    const rng = createRng(before.rng.seed);
+
+    const { state, events } = applyCommand(
+      before,
+      { type: 'move', direction: 'south' },
+      rng,
+    );
+
+    expect(events).toEqual([moved('player', at(0, 0), at(0, 1))]);
+    expect(state.entities.find((e) => e.id === 'player')?.pos).toEqual(at(0, 1));
+  });
+
   it('replays a serialized log containing a null element without throwing', () => {
     const commands = [
       { type: 'move', direction: 'south' },

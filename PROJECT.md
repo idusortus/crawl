@@ -54,8 +54,8 @@ npm start         # expo start
 
 ## Roadmap (staged; one OpenSpec change per stage)
 1. **`bootstrap-engine-skeleton`** — pure-TS grid, entities, seeded RNG, `applyCommand → events`, event log, Vitest. *(complete)*
-2. `content-packs-v1` — pack loader + zod schema; tiny fantasy pack.
-3. `levelgen-and-fov` — seeded level generation + field of view.
+2. **`content-packs-v1`** — pack loader + zod schema; tiny fantasy pack; `use-item` command/event drawing from the injected RNG. *(complete)*
+3. `levelgen-and-fov` — seeded level generation + field of view. *(next)*
 4. `expo-glyph-renderer` — Expo Router shell + glyph renderer + input mapping.
 5. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load.
 6. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test).

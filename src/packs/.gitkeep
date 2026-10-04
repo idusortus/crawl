@@ -1,0 +1,4 @@
+# Content packs (Stage 2+). Intentionally empty for Milestone 1.
+#
+# Pack schemas and loading are out of scope for this change; this file only
+# preserves the folder in git until the next phase populates it.

@@ -1,0 +1,4 @@
+# Expo Router file-based routes (Stage 4+). Intentionally empty for Milestone 1.
+#
+# `src/app` is the officially supported Expo Router location (SDK 55+); no
+# custom router `root` config is needed.

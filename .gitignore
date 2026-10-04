@@ -11,3 +11,31 @@ histories/
 
 # Node
 node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Build / test artifacts
+coverage/
+
+# Metro / debug
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# TypeScript
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+# local env files
+.env*.local
+
+# generated native folders
+/ios
+/android

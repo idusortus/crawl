@@ -1,21 +1,41 @@
 # crawl
 
-> TODO — write a one-line vision statement.
+> A deterministic, theme-swappable roguelike engine: a pure-TypeScript headless core driven by command-in / event-out over JSON-serializable state, with an Expo + React Native client and all content supplied as swappable data packs.
 
 This file is the tool-agnostic project context. Codex, Cursor, Aider, Gemini CLI, Zed,
 and Copilot all read `AGENTS.md` per the [agents.md](https://agents.md) convention.
 
 ## Goal
-TODO — declare the primary goal.
+Keep determinism, framework-freedom, and content-agnosticism as *structural* invariants of `src/engine`, so that whole settings (fantasy, sci-fi, "family dog") are swappable data packs rather than engine forks. Milestone 1 ships a headless engine only — no UI — so the boundary is proven before a renderer can blur it.
 
 ## Stack
-HTML + CSS + JavaScript
+- **Expo SDK** ~57.0.26 + **React Native** 0.86.3 + **React** 19.2.3 (New Architecture)
+- **TypeScript** 5.9 (strict), extends `expo/tsconfig.base`
+- **Node** ≥ 22.13 (Node 24.x tested)
+- Bundler-driven (Metro); no browser CDN scripts.
 
 ## Frameworks / Key Libraries
-CDN (no bundler)
+- expo / expo-router — app shell and (later) routing
+- Vitest 5 — engine tests (`environment: 'node'`, `vite-tsconfig-paths` for `@engine`)
+- ESLint 9 flat config (`eslint-config-expo/flat` + `typescript-eslint`) — enforces the engine boundary
+- zod (planned, Stage 2) — content-pack schemas
+
+## Engine boundary rules (the important part)
+`src/engine` is the whole product; everything else is a client of it. These rules are enforced and must not be relaxed:
+
+- **Pure TypeScript.** No `react`, `react-native`, or `expo*` imports. No `Math.random`, `Date.now`, or `Date`. ESLint on `src/engine/**` fails CI on any of these.
+- **Command-in / event-out.** The only way to advance the game is `applyCommand(state, command, rng) -> { state, events }`. It returns a **new** state; the input is never mutated. Every command emits ≥ 1 event.
+- **JSON-serializable state.** `GameState` contains only plain data — no classes, `Map`, `Set`, functions, or meaningful `undefined`. Save/replay/undo are serialization plus the command log.
+- **Injected seeded RNG.** All randomness flows through an `Rng` created from state and written back into state (`{ seed, state }`). Same seed + same commands ⇒ identical outcome.
+- **Content is data, never code.** Content will live in `src/packs` (Stage 2+); the engine references content only by id/kind. M1 hardcodes fixtures inside tests only.
+- **Behaviors by named id** (later stages): AI/behaviors will be looked up by a named registry id rather than engine-embedded closures.
+- **Import through the public surface.** Outside `src/engine`, import only from `@engine` (`src/engine/index.ts`) — never a deeper module.
+
+For the full staged roadmap, see `PROJECT.md`.
 
 ## Constraints
-None declared.
+- Do not add features ahead of the current stage (no levelgen/AI/combat/render/packs until their stage).
+- Do not weaken the `src/engine` purity rules to make a feature fit; treat any needed engine change from a new pack as an abstraction leak to fix.
 
 ## Workflow
 1. Read `PROJECT.md` for the long-form vision.

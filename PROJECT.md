@@ -16,7 +16,7 @@ Build one engine whose determinism, framework-freedom, and content-agnosticism a
 - **expo / expo-router** — app shell and (later) file-based routing
 - **Vitest 5** — engine unit tests under `environment: 'node'` (with `vite-tsconfig-paths` for the `@engine` alias)
 - **ESLint 9** flat config (`eslint-config-expo/flat` + `typescript-eslint`) — enforces the `src/engine` purity boundary
-- **zod** (planned, Stage 2) — runtime schemas for content packs
+- **zod** — runtime schemas for content packs (Stage 2, already a direct dependency)
 
 ## Quickstart
 ```bash
@@ -40,7 +40,7 @@ npm start         # expo start
 - Content never lives in the engine. Content is data in `src/packs` (Stage 2+); M1 hardcodes fixtures only inside tests.
 
 ## Out of Scope (through Milestone 1)
-- No UI, rendering, input, or Expo runtime wiring — M1 is headless.
+- No UI, rendering, input, or Expo runtime wiring — the engine is headless.
 - No content packs or zod schemas (Stage 2).
 - No level generation or FOV (Stage 3).
 - No monster AI, combat, items, stairs, save/load I/O, or permadeath (Stage 5).
@@ -55,10 +55,11 @@ npm start         # expo start
 ## Roadmap (staged; one OpenSpec change per stage)
 1. **`bootstrap-engine-skeleton`** — pure-TS grid, entities, seeded RNG, `applyCommand → events`, event log, Vitest. *(complete)*
 2. **`content-packs-v1`** — pack loader + zod schema; tiny fantasy pack; `use-item` command/event drawing from the injected RNG. *(complete)*
-3. `levelgen-and-fov` — seeded level generation + field of view. *(next)*
-4. `expo-glyph-renderer` — Expo Router shell + glyph renderer + input mapping.
-5. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load.
-6. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test).
+3. **`levelgen-and-fov`** — seeded BSP level generation + named-generator registry, recursive-shadowcasting FOV, stored explored mask, deterministic `descend`. *(complete)*
+4. **APK pipeline** — build/CI change to produce an installable Android APK. *(next — queued by the user immediately after Stage 3, before further engine work)*
+5. `expo-glyph-renderer` — Expo Router shell + glyph renderer + input mapping.
+6. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load.
+7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test).
 
 ---
 

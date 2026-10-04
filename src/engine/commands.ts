@@ -13,7 +13,16 @@
  */
 
 import { entityById, entityAt, isPassable } from './grid';
-import { appendEvents, blocked, itemUsed, moved, noop } from './events';
+import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from './fov';
+import { generateLevel } from './level';
+import {
+  appendEvents,
+  blocked,
+  itemUsed,
+  levelChanged,
+  moved,
+  noop,
+} from './events';
 import { resolveEffect } from './effects';
 import type { LoadedPack } from './pack';
 import type { PackItem } from './schema/pack';
@@ -24,6 +33,8 @@ import type {
   Entity,
   GameEvent,
   GameState,
+  Grid,
+  Level,
   Position,
 } from './types';
 
@@ -34,25 +45,49 @@ export interface CommandResult {
 }
 
 /**
- * Writes the live `rng` state back into `state` and appends `events` to the log,
- * returning a new state. Every command branch funnels through this so the
- * RNG-threading and append-only-log invariants are defined in exactly one place
- * (M1 design D3; change `content-packs-v1` D7).
+ * Optional world-state overrides for `commit`. Each field, when present,
+ * replaces the corresponding top-level field of the returned state; an omitted
+ * field leaves the input's value in place. This is what lets a command replace
+ * `entities` (as `move`/`use-item` do) **or** swap in an entirely new level
+ * (as `descend` does) through one centralized write-back path, so the
+ * RNG-threading and append-only-log invariants are still defined in exactly one
+ * place (M1 design D3; change `levelgen-and-fov` D6).
+ */
+interface StateOverrides {
+  entities?: Entity[];
+  grid?: Grid;
+  level?: Level;
+  explored?: boolean[];
+}
+
+/**
+ * Writes the live `rng` state back into `state`, applies any world-state
+ * overrides, and appends `events` to the log, returning a new state. Every
+ * command branch funnels through this so the RNG-threading and append-only-log
+ * invariants are defined in exactly one place (M1 design D3; change
+ * `content-packs-v1` D7; generalized by change `levelgen-and-fov` D6).
  *
- * `entities` optionally replaces the entity list (used by commands that change
- * world data — `move`, `use-item`); omitting it leaves `state.entities` as-is
- * (used by `noop`/`blocked` paths).
+ * Omitted override fields leave `state`'s value untouched (`noop`/`blocked`
+ * paths pass none); provided fields replace the corresponding top-level field
+ * with a fresh value. The input `state` is never mutated.
  */
 function commit(
   state: GameState,
   rng: Rng,
   events: GameEvent[],
-  entities?: Entity[],
+  overrides: StateOverrides = {},
 ): CommandResult {
   return {
     state: {
       ...state,
-      ...(entities === undefined ? {} : { entities }),
+      ...(overrides.entities === undefined
+        ? {}
+        : { entities: overrides.entities }),
+      ...(overrides.grid === undefined ? {} : { grid: overrides.grid }),
+      ...(overrides.level === undefined ? {} : { level: overrides.level }),
+      ...(overrides.explored === undefined
+        ? {}
+        : { explored: overrides.explored }),
       rng: { seed: state.rng.seed, state: rng.state() },
       events: appendEvents(state.events, events),
     },
@@ -115,6 +150,12 @@ function withEntityAt(
  * Emits `moved` and advances the entity on success, or `blocked` when the
  * target is out-of-bounds, non-passable, or occupied. A missing player entity
  * is a `noop` (nothing to move) rather than a crash.
+ *
+ * On success the tiles visible from the **new** position are OR'd into the
+ * `explored` mask (change `levelgen-and-fov` D6 / spatial-grid spec: "Moving
+ * reveals on the way"), so exploring is a side effect of movement. A blocked
+ * move takes the early `commit` path with no overrides, so `grid`, `level`, and
+ * `explored` are all left unchanged apart from the appended event.
  */
 function applyMove(
   state: GameState,
@@ -139,12 +180,15 @@ function applyMove(
     return commit(state, rng, [blocked(entity.id, direction)]);
   }
 
-  return commit(
-    state,
-    rng,
-    [moved(entity.id, entity.pos, target)],
-    withEntityAt(state.entities, entity.id, target),
-  );
+  // Discovery is derived from the new tile only; previously explored tiles are
+  // retained by the OR (`exploreInto` is monotonic).
+  const visible = computeFov(state.grid, target, DEFAULT_SIGHT_RADIUS);
+  const explored = exploreInto(state.explored, visible);
+
+  return commit(state, rng, [moved(entity.id, entity.pos, target)], {
+    entities: withEntityAt(state.entities, entity.id, target),
+    explored,
+  });
 }
 
 /**
@@ -194,12 +238,76 @@ function applyUseItem(
   const entities = state.entities.map((entity) =>
     entity.id === actor.id ? resolution.actorAfter : entity,
   );
-  return commit(
-    state,
-    rng,
-    [itemUsed(actor.id, itemId, resolution.applied)],
+  return commit(state, rng, [itemUsed(actor.id, itemId, resolution.applied)], {
     entities,
+  });
+}
+
+/**
+ * The dimensions of a generated dungeon level (see the decision below).
+ *
+ * `descend` does not carry dimensions, and reusing the current grid's size would
+ * couple level size to whatever fixture a caller happened to start with.
+ * Instead every descended level is generated at a fixed, documented size:
+ * **40 wide × 30 tall** — large enough for the BSP partitioner to produce
+ * several rooms (comfortably above `MIN_LEAF_FOR_SPLIT` on both axes) while
+ * staying small for v1 FOV/serialization costs. Starting levels may differ (a
+ * hand-built fixture), but the dungeon below depth 1 is uniform.
+ */
+const DESCEND_LEVEL_WIDTH = 40;
+const DESCEND_LEVEL_HEIGHT = 30;
+
+/**
+ * Resolves a `descend` command (change `levelgen-and-fov`, design D6).
+ *
+ * Generates a level at `state.level.depth + 1` using the injected RNG via
+ * `generateLevel` (default generator), then returns a state whose `grid` is the
+ * generated terrain, whose `level` is the generated metadata (new depth +
+ * spawn), and whose `explored` mask is **fresh for the new level**: all-false
+ * OR'd with the spawn's FOV, so tiles from the previous level cannot leak in
+ * (D5 / command-loop spec "Level change resets per-level view state"). The
+ * player entity is repositioned onto the new spawn.
+ *
+ * A `level-changed` event carrying the new depth is emitted. The RNG state is
+ * threaded back through `commit` (generation consumes randomness, so it must
+ * persist for replay). The input state is never mutated.
+ *
+ * A missing player entity is a `noop` (nothing to place) rather than a crash —
+ * consistent with `move`'s missing-actor handling.
+ */
+function applyDescend(state: GameState, rng: Rng): CommandResult {
+  const entity = entityById(state.entities, state.playerId);
+  if (entity === undefined) {
+    return commit(state, rng, [noop('no-player-entity')]);
+  }
+
+  const depth = state.level.depth + 1;
+  const generated = generateLevel({
+    rng,
+    width: DESCEND_LEVEL_WIDTH,
+    height: DESCEND_LEVEL_HEIGHT,
+    depth,
+  });
+
+  const spawn = generated.level.spawn;
+  const visible = computeFov(
+    generated.grid,
+    spawn,
+    DEFAULT_SIGHT_RADIUS,
   );
+  const explored = exploreInto(
+    new Array<boolean>(generated.grid.width * generated.grid.height).fill(
+      false,
+    ),
+    visible,
+  );
+
+  return commit(state, rng, [levelChanged(depth)], {
+    grid: generated.grid,
+    level: generated.level,
+    explored,
+    entities: withEntityAt(state.entities, entity.id, spawn),
+  });
 }
 
 /**
@@ -244,6 +352,11 @@ export function applyCommand(
         return commit(state, rng, [noop('malformed-command')]);
       }
       return applyMove(state, command.direction, rng);
+    case 'descend':
+      // `descend` is content-free and parameterless, so it resolves here as
+      // well as in `applyCommandWithPack` (design D6). It never falls through
+      // to the `default` noop.
+      return applyDescend(state, rng);
     default: {
       // `command` is `never` for a recognized variant, but unrecognized types
       // arrive from serialized logs, so widen to a structural check. The
@@ -291,6 +404,10 @@ export function applyCommandWithPack(
         return commit(state, rng, [noop('malformed-command')]);
       }
       return applyMove(state, command.direction, rng);
+    case 'descend':
+      // Content-free: same resolution as `applyCommand`, so a UI that supplies
+      // a pack for `use-item` can still descend (design D6).
+      return applyDescend(state, rng);
     case 'use-item':
       // A non-string/empty item id must not reach the pack lookup (which would
       // throw or silently miss); reject it as a malformed command.

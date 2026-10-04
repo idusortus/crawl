@@ -91,6 +91,8 @@ function makeState(hp = 10): GameState {
   const rng = createRng(1234);
   return {
     grid,
+    level: { depth: 1, spawn: { x: 0, y: 0 } },
+    explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: [{ id: 'player', kind: 'hero', pos: { x: 0, y: 0 }, hp }],
     playerId: 'player',
     rng: { seed: 1234, state: rng.state() },
@@ -512,6 +514,8 @@ describe('seeded-random use-item is driven by the injected RNG', () => {
       const rng = createRng(seed);
       const state: GameState = {
         grid,
+        level: { depth: 1, spawn: { x: 0, y: 0 } },
+        explored: new Array<boolean>(grid.width * grid.height).fill(false),
         entities: [{ id: 'player', kind: 'hero', pos: { x: 0, y: 0 }, hp: 0 }],
         playerId: 'player',
         rng: { seed, state: rng.state() },

@@ -223,6 +223,8 @@ describe('content is not embedded in game state', () => {
     };
     const state: GameState = {
       grid: smallGrid,
+      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      explored: new Array<boolean>(smallGrid.width * smallGrid.height).fill(false),
       entities: [goblinEntity],
       playerId: 'player',
       rng: { seed: 1, state: 1 },
@@ -240,6 +242,8 @@ describe('content is not embedded in game state', () => {
     const loaded = loadPack(validPack());
     const state: GameState = {
       grid: smallGrid,
+      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      explored: new Array<boolean>(smallGrid.width * smallGrid.height).fill(false),
       entities: [
         { id: 'player', kind: loaded.class('fighter').id, pos: { x: 0, y: 0 } },
         { id: 'mob-1', kind: loaded.monster('goblin').id, pos: { x: 1, y: 0 } },

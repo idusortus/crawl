@@ -64,6 +64,7 @@ crawl/
       grid.ts      # grid + passability + occupancy helpers
       events.ts    # event constructors + append-only log helper
       commands.ts  # applyCommand: move -> moved/blocked/noop
+      fov.ts       # computeFov (recursive shadowcasting) + exploreInto union
       pack.ts      # loadPack: validate + composition floor + id lookup
       schema/      # zod pack schema (Pack/PackClass/PackMonster/PackItem/ItemEffect)
       index.ts     # public surface (@engine) — import here, not deeper

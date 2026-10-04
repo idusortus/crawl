@@ -22,6 +22,43 @@ export function inBounds(grid: Grid, pos: Position): boolean {
 }
 
 /**
+ * Returns the flat row-major index of `pos`: `y * width + x`.
+ *
+ * The same convention indexes `grid.passable` and `GameState.explored` (design
+ * D1). This helper is **index arithmetic only** — it does not bounds-check, so
+ * an out-of-bounds `pos` still yields the arithmetic value (useful for a
+ * caller that has already called `inBounds`). Use `isPassable`/`inBounds` when
+ * a safe tile lookup is needed.
+ */
+export function indexOf(grid: Grid, pos: Position): number {
+  return pos.y * grid.width + pos.x;
+}
+
+/**
+ * Returns the coordinate of flat row-major `index` for `grid`, i.e. the inverse
+ * of `indexOf`. `index` is expected to be in `[0, width * height)`; callers that
+ * iterate always pass a valid index.
+ */
+export function coordOf(grid: Grid, index: number): Position {
+  return { x: index % grid.width, y: Math.floor(index / grid.width) };
+}
+
+/**
+ * Calls `visit(pos)` for every tile of `grid` in flat row-major order (the same
+ * order as `grid.passable`), so callers can iterate tiles without duplicating
+ * the `y * width + x` math. Pure with respect to the grid: it only reads
+ * `width`/`height`.
+ */
+export function forEachCoord(
+  grid: Grid,
+  visit: (pos: Position, index: number) => void,
+): void {
+  for (let index = 0; index < grid.width * grid.height; index++) {
+    visit(coordOf(grid, index), index);
+  }
+}
+
+/**
  * Returns the passability of the tile at `pos`.
  *
  * Coordinates outside the grid report `false` (not passable) and never read

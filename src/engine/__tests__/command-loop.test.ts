@@ -10,6 +10,7 @@ import {
   noop,
   rngFromState,
 } from '../index';
+import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from '../fov';
 import type { Command, GameEvent, GameState, Position } from '../index';
 
 /**
@@ -30,6 +31,8 @@ function makeState(entities?: GameState['entities']): GameState {
   const rng = createRng(1234);
   return {
     grid,
+    level: { depth: 1, spawn: { x: 0, y: 0 } },
+    explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: entities ?? [
       { id: 'player', kind: 'player', pos: { x: 0, y: 0 } },
       { id: 'rock', kind: 'rock', pos: { x: 2, y: 0 } },
@@ -319,6 +322,8 @@ describe('move resolution', () => {
       const rng = createRng(1234);
       const state: GameState = {
         grid: openGrid,
+        level: { depth: 1, spawn: at(1, 1) },
+        explored: new Array<boolean>(openGrid.width * openGrid.height).fill(false),
         entities: [{ id: 'player', kind: 'player', pos: at(1, 1) }],
         playerId: 'player',
         rng: { seed: 1234, state: rng.state() },
@@ -366,6 +371,8 @@ describe('move resolution', () => {
     const rng = createRng(1234);
     const state: GameState = {
       grid: openGrid,
+      level: { depth: 1, spawn: at(0, 1) },
+      explored: new Array<boolean>(openGrid.width * openGrid.height).fill(false),
       entities: [
         { id: 'player', kind: 'player', pos: at(0, 1) },
         { id: 'rock', kind: 'rock', pos: at(1, 1) },
@@ -405,6 +412,87 @@ describe('move resolution', () => {
       const { events } = applyCommand(state, command as Command, rng);
       expect(events.length).toBeGreaterThanOrEqual(1);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// explored-on-move (change `levelgen-and-fov`, task 4.3)
+// ---------------------------------------------------------------------------
+
+describe('movement updates the explored mask', () => {
+  /** A 5x5 open room with the player at (2, 2) and an all-false mask. */
+  function openState(): GameState {
+    const grid = createGrid(
+      Array.from({ length: 5 }, () => new Array<boolean>(5).fill(true)),
+    );
+    const rng = createRng(99);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [{ id: 'player', kind: 'player', pos: at(2, 2) }],
+      playerId: 'player',
+      rng: { seed: 99, state: rng.state() },
+      events: [],
+    };
+  }
+
+  it('ORs the new position FOV into explored after a successful move', () => {
+    const before = openState();
+    const { state } = applyCommand(
+      before,
+      { type: 'move', direction: 'east' },
+      rngFromState(before.rng),
+    );
+
+    expect(state.entities.find((e) => e.id === 'player')?.pos).toEqual(at(3, 2));
+    const visibleAtNew = computeFov(state.grid, at(3, 2), DEFAULT_SIGHT_RADIUS);
+    expect(state.explored).toEqual(visibleAtNew);
+  });
+
+  it('retains previously explored tiles and only grows', () => {
+    const before = openState();
+    const afterFirst = applyCommand(
+      before,
+      { type: 'move', direction: 'east' },
+      rngFromState(before.rng),
+    ).state;
+    const afterSecond = applyCommand(
+      afterFirst,
+      { type: 'move', direction: 'south' },
+      rngFromState(afterFirst.rng),
+    ).state;
+
+    // Second step's explored equals first mask OR'd with the new FOV.
+    const expected = exploreInto(
+      afterFirst.explored,
+      computeFov(afterSecond.grid, at(3, 3), DEFAULT_SIGHT_RADIUS),
+    );
+    expect(afterSecond.explored).toEqual(expected);
+
+    afterFirst.explored.forEach((wasExplored, index) => {
+      if (wasExplored) expect(afterSecond.explored[index]).toBe(true);
+    });
+  });
+
+  it('leaves explored byte-for-byte unchanged when the move is blocked', () => {
+    const before = openState();
+    // Seed the mask with a known pattern, then ram the top boundary.
+    const seeded: GameState = {
+      ...before,
+      explored: before.explored.map((_, index) => index % 3 === 0),
+      entities: [{ id: 'player', kind: 'player', pos: at(2, 0) }],
+    };
+    const { state, events } = applyCommand(
+      seeded,
+      { type: 'move', direction: 'north' },
+      rngFromState(seeded.rng),
+    );
+
+    expect(events[0]).toEqual(blocked('player', 'north'));
+    expect(state.explored).toEqual(seeded.explored);
+    expect(state.grid).toEqual(seeded.grid);
+    expect(state.level).toEqual(seeded.level);
   });
 });
 

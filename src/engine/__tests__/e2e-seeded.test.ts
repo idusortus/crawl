@@ -69,8 +69,11 @@ function createScenarioGrid() {
 /** The immutable starting state for a run: grid + player + rock, empty log. */
 function createInitialState(): GameState {
   const rng = createRng(SEED);
+  const grid = createScenarioGrid();
   return {
-    grid: createScenarioGrid(),
+    grid,
+    level: { depth: 1, spawn: at(0, 0) },
+    explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: [
       { id: 'player', kind: 'player', pos: at(0, 0) },
       { id: 'rock', kind: 'rock', pos: at(1, 0) },

@@ -11,6 +11,8 @@ function makeState(): GameState {
   const rng = createRng(4242);
   return {
     grid,
+    level: { depth: 1, spawn: { x: 0, y: 0 } },
+    explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: [
       { id: 'player', kind: 'player', pos: { x: 0, y: 0 } },
       { id: 'rock', kind: 'rock', pos: { x: 2, y: 0 }, solid: true },

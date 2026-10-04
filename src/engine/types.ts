@@ -39,11 +39,31 @@ export interface Entity {
  * `passable` is a flat row-major array of length `width * height`; index
  * `y * width + x` holds tile `(x, y)`'s passability. A flat array (rather than
  * a nested array or a `Map`) keeps the grid JSON-clean and cheap to serialize.
+ *
+ * This indexing convention is shared by every flat per-tile array in state
+ * (notably `GameState.explored`): a tile's flat index is always `y * width + x`
+ * for a grid of the same dimensions (design D1).
  */
 export interface Grid {
   width: number;
   height: number;
   passable: boolean[];
+}
+
+/**
+ * Metadata for the level the player is currently on (change
+ * `levelgen-and-fov`, design D1).
+ *
+ * The level's terrain stays in `GameState.grid` — `Grid` itself is unchanged so
+ * existing consumers keep working. This object records only the progression
+ * metadata: how deep the player is and where they spawned. It is plain data
+ * (numbers + a `Position`) and therefore JSON-clean.
+ */
+export interface Level {
+  /** 1-based dungeon depth; a freshly generated level is at least 1. */
+  depth: number;
+  /** The tile the player was placed on when entering this level. */
+  spawn: Position;
 }
 
 /**
@@ -76,8 +96,22 @@ export interface UseItemCommand {
   itemId: string;
 }
 
+/**
+ * A command to descend to the next dungeon level (change `levelgen-and-fov`,
+ * design D6).
+ *
+ * It is deliberately parameterless in v1: the engine decides the next depth
+ * (`current + 1`) and generates the new level from the injected RNG. Because it
+ * carries no content reference it is resolved by **both** command entry points
+ * (`applyCommand` and `applyCommandWithPack`), so a UI that uses the pack-aware
+ * entry point for `use-item` can still descend.
+ */
+export interface DescendCommand {
+  type: 'descend';
+}
+
 /** Every command the engine understands. Extended as new actions land. */
-export type Command = MoveCommand | UseItemCommand;
+export type Command = MoveCommand | UseItemCommand | DescendCommand;
 
 /** Emitted when an entity successfully steps into a new tile. */
 export interface MovedEvent {
@@ -117,21 +151,49 @@ export interface ItemUsedEvent {
   effect: { kind: string; amount: number };
 }
 
+/**
+ * Emitted when the player descends to a newly generated level (change
+ * `levelgen-and-fov`, design D6).
+ *
+ * Carries the **new** depth as a plain number so the event stream alone
+ * describes progression; it is fully JSON-clean and appended to the log like
+ * every other event.
+ */
+export interface LevelChangedEvent {
+  type: 'level-changed';
+  depth: number;
+}
+
 /** Discriminated union of everything a command can report (design D3). */
 export type GameEvent =
   | MovedEvent
   | BlockedEvent
   | NoopEvent
-  | ItemUsedEvent;
+  | ItemUsedEvent
+  | LevelChangedEvent;
 
 /**
  * The complete, JSON-serializable game state.
  *
  * `rng.state` is advanced only through the command loop; helpers in `rng.ts`
  * operate on an `Rng` instance created from these fields (design D2).
+ *
+ * `level` and `explored` were added by change `levelgen-and-fov` (design D1):
+ *
+ *  - `level` carries the current level's metadata (depth + spawn) while the
+ *    terrain remains `grid`, kept as a top-level field to avoid churning every
+ *    existing consumer.
+ *  - `explored` is the per-level explored mask: a flat row-major `boolean[]` of
+ *    length `grid.width * grid.height`, index `y * width + x` — the **same
+ *    indexing as `grid.passable`**. It is monotonic while on a level (only ever
+ *    grows) and is reset when a new level is entered. Visibility itself is
+ *    derived by the FOV computation, not stored here.
  */
 export interface GameState {
   grid: Grid;
+  level: Level;
+  /** Flat row-major explored mask, length `width * height`; see `Level`/D1. */
+  explored: boolean[];
   entities: Entity[];
   playerId: string;
   rng: RngState;

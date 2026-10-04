@@ -14,6 +14,7 @@ import type {
   Direction,
   GameEvent,
   ItemUsedEvent,
+  LevelChangedEvent,
   MovedEvent,
   NoopEvent,
   Position,
@@ -64,6 +65,15 @@ export function itemUsed(
     itemId,
     effect: { kind: effect.kind, amount: effect.amount },
   };
+}
+
+/**
+ * Creates a `level-changed` event reporting the depth of the new level (change
+ * `levelgen-and-fov`, design D6). The depth is a plain number, so the event is
+ * JSON-clean like every other.
+ */
+export function levelChanged(depth: number): LevelChangedEvent {
+  return { type: 'level-changed', depth };
 }
 
 /**

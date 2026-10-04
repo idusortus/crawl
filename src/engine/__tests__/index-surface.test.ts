@@ -8,14 +8,22 @@ import {
   applyCommand,
   applyCommandWithPack,
   blocked,
+  computeFov,
   createGrid,
   createRng,
+  DEFAULT_GENERATOR_ID,
+  DEFAULT_SIGHT_RADIUS,
   effectRegistry,
   entityAt,
   entityById,
+  exploreInto,
+  generateBspLevel,
+  generateLevel,
+  generatorIds,
   inBounds,
   isPassable,
   itemUsed,
+  levelChanged,
   loadPack,
   MIN_CLASSES,
   MIN_ITEMS,
@@ -28,6 +36,7 @@ import {
   rngFromState,
   rngToState,
   UnknownContentIdError,
+  UnknownGeneratorIdError,
   validatePack,
 } from '@engine/index';
 import type {
@@ -35,15 +44,21 @@ import type {
   BlockedEvent,
   Command,
   ContentCollection,
+  DescendCommand,
   Direction,
   EffectResolution,
   EffectResolver,
   Entity,
   GameEvent,
   GameState,
+  GeneratedLevel,
+  GenerateLevelInput,
   Grid,
   ItemEffect,
   ItemUsedEvent,
+  LevelChangedEvent,
+  LevelGenerator,
+  LevelGeneratorOptions,
   LoadedPack,
   MovedEvent,
   MoveCommand,
@@ -74,6 +89,8 @@ describe('public engine surface (@engine)', () => {
     const player: Entity = { id: 'player', kind: 'player', pos: { x: 0, y: 0 } };
     const state: GameState = {
       grid,
+      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
       entities: [player],
       playerId: 'player',
       rng: rngToState(7, rng),
@@ -158,6 +175,8 @@ describe('public engine surface (@engine)', () => {
     };
     const state: GameState = {
       grid,
+      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
       entities: [player],
       playerId: 'player',
       rng: rngToState(42, rng),
@@ -204,5 +223,89 @@ describe('public engine surface (@engine)', () => {
     const collection: ContentCollection = 'item';
     expect(collection).toBe('item');
     expect(() => pack.item('nope')).toThrow(UnknownContentIdError);
+  });
+});
+
+// Stage 3 (task 5.1): the level/FOV/descend flow must be reachable through the
+// barrel alone. This test imports ONLY from `@engine/index` (no deeper module)
+// and runs: generate a level -> computeFov + exploreInto to seed explored ->
+// build a GameState -> apply a `descend` command -> assert `level-changed` and
+// depth+1. A missing re-export for any of these symbols fails the build.
+describe('public engine surface — levelgen + FOV + descend (@engine)', () => {
+  it('generates a level, seeds explored via FOV, and descends through the barrel', () => {
+    // --- Generator registry seam (D3) -------------------------------------
+    expect(DEFAULT_GENERATOR_ID).toBe('bsp');
+    expect(generatorIds()).toContain('bsp');
+
+    // Both the registry entry point and the BSP generator directly.
+    const rng: Rng = createRng(1234);
+    const options: LevelGeneratorOptions = { width: 40, height: 30, depth: 1 };
+    const input: GenerateLevelInput = { ...options, rng, id: 'bsp' };
+    const generated: GeneratedLevel = generateLevel(input);
+    // A fresh RNG at the same seed reproduces the same level (determinism), and
+    // the direct generator agrees with the registry dispatch.
+    const direct: GeneratedLevel = generateBspLevel(createRng(1234), options);
+    expect(generated).toEqual(direct);
+
+    // The unknown-id path is loud and typed, part of the public surface.
+    expect(() => generateLevel({ ...options, rng, id: 'nope' })).toThrow(
+      UnknownGeneratorIdError,
+    );
+
+    // The BSP generator type is assignable through the barrel (compile check).
+    const generator: LevelGenerator = generateBspLevel;
+    expect(typeof generator).toBe('function');
+
+    // --- FOV + explored (D4/D5) ------------------------------------------
+    expect(DEFAULT_SIGHT_RADIUS).toBe(8);
+    const { grid, level } = generated;
+    const spawnFov: boolean[] = computeFov(grid, level.spawn, DEFAULT_SIGHT_RADIUS);
+    expect(spawnFov).toHaveLength(grid.width * grid.height);
+    // The spawn tile is always visible from itself.
+    expect(spawnFov[level.spawn.y * grid.width + level.spawn.x]).toBe(true);
+
+    const explored: boolean[] = exploreInto(
+      new Array<boolean>(grid.width * grid.height).fill(false),
+      spawnFov,
+    );
+    expect(explored).toEqual(spawnFov);
+
+    // --- Build a GameState from the generated level -----------------------
+    const player: Entity = { id: 'player', kind: 'player', pos: level.spawn };
+    const state: GameState = {
+      grid,
+      level,
+      explored,
+      entities: [player],
+      playerId: 'player',
+      rng: rngToState(1234, rng),
+      events: [],
+    };
+
+    // --- Descend through the public command loop --------------------------
+    const command: DescendCommand = { type: 'descend' };
+    const result = applyCommand(state, command, rngFromState(state.rng));
+
+    const event: GameEvent = result.events[0];
+    expect(event.type).toBe('level-changed');
+    if (event.type !== 'level-changed') return;
+
+    const changed: LevelChangedEvent = event;
+    expect(changed.depth).toBe(2);
+    expect(changed).toEqual(levelChanged(2));
+
+    // Depth advanced by one and the player stands on the new spawn.
+    expect(result.state.level.depth).toBe(2);
+    expect(result.state.grid).not.toBe(grid);
+    expect(result.state.entities[0].pos).toEqual(result.state.level.spawn);
+    // Explored was rebuilt for the new level (correct length, spawn visible).
+    expect(result.state.explored).toHaveLength(
+      result.state.grid.width * result.state.grid.height,
+    );
+    const newIndex =
+      result.state.level.spawn.y * result.state.grid.width + result.state.level.spawn.x;
+    expect(result.state.explored[newIndex]).toBe(true);
+    // Input state is never mutated.
+    expect(state.level.depth).toBe(1);
   });
 });

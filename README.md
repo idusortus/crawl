@@ -50,6 +50,33 @@ The engine is **pure**: it must never import `react`/`react-native`/`expo`, and 
 
 > Scope: this milestone ships the Expo/TS scaffold + tooling, the engine core (seeded RNG, 2D grid + occupancy, JSON-clean types, command loop with `move` resolution), and a versioned content-pack schema/loader with the first real pack. Rendering, level generation, AI, and a content-driven `use-item` command are later stages.
 
+## Building an Android APK / Releases
+
+An installable Android APK is built in CI by [`.github/workflows/android-apk.yml`](.github/workflows/android-apk.yml) — no Expo/EAS account, secrets, or Android SDK on your machine are required (the GitHub-hosted runner supplies them).
+
+**Cut a release** (recommended path):
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Pushing a `v*` tag triggers the workflow, which prebuilds the native project (`npx expo prebuild --platform android --no-install`), runs `./gradlew assembleRelease`, verifies the APK, and publishes it to the matching **GitHub Release**. The asset is named:
+
+```
+crawl-<tag>.apk        # e.g. crawl-v0.2.0.apk
+```
+
+Download it from the repository's **Releases** page and sideload it (`adb install crawl-v0.2.0.apk`). The APK is built for the application id `com.idusortus.crawl`.
+
+**Manual run (no tag):** open **Actions → Android APK → Run workflow**. A manual run always uploads the APK as a downloadable workflow artifact (`crawl-android-apk`, asset `crawl-<sha>.apk`). Pass the optional `version` input (e.g. `v0.2.0`) to additionally attach it to that Release; with no version it only produces the workflow artifact.
+
+### Signing (testing artifact)
+
+Release APKs are signed with the auto-generated **debug keystore** — zero secrets, fine for sideloading and testing, but **not** upgrade-stable against a differently signed build and not valid for the Play Store. This is a deliberate trade-off for an install-and-test artifact.
+
+> **Future: production signing.** To ship properly signed builds, generate a release keystore, add `SIGNING_KEYSTORE_BASE64` / `SIGNING_KEYSTORE_PASSWORD` / `SIGNING_KEY_ALIAS` / `SIGNING_KEY_PASSWORD` repository secrets, decode the keystore in the workflow, and add a `signingConfigs.release` block (using those secrets) to the generated `android/app/build.gradle`. That is a follow-up, not part of this pipeline.
+
 ## Layout
 
 ```
@@ -57,7 +84,7 @@ crawl/
   App.tsx / index.ts / app.json   # Expo app entry (placeholder for M1)
   assets/                          # Expo icons/splash
   src/
-    app/    # Expo Router routes (Stage 4+, empty)
+    app/    # Expo Router routes (Stage 5+, empty)
     engine/ # PURE TypeScript engine — no framework imports
       types.ts     # GameState, Command, GameEvent, Entity, Position, Grid
       rng.ts       # seeded Mulberry32 + JSON-clean RngState helpers
@@ -71,7 +98,7 @@ crawl/
       __tests__/
     packs/  # content packs (data only)
       fantasy/   # pack.json + thin TS entry + tests (2 classes, 3 monsters, 5 items)
-    ui/     # React Native components (Stage 4+, empty)
+    ui/     # React Native components (Stage 5+, empty)
   openspec/  # change proposals & specs
 ```
 

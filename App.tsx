@@ -2,7 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View } from 'react-native';
 
 // Milestone 1 is headless: this placeholder only proves the Expo app boots.
-// The real UI arrives in Stage 4 (src/ui + expo-router under src/app).
+// The real UI arrives in Stage 5 (src/ui + expo-router under src/app).
 export default function App() {
   return (
     <View style={styles.container}>

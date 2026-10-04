@@ -31,7 +31,7 @@ Keep determinism, framework-freedom, and content-agnosticism as *structural* inv
 - **Behaviors by named id** (later stages): AI/behaviors will be looked up by a named registry id rather than engine-embedded closures.
 - **Import through the public surface.** Outside `src/engine`, import only from `@engine` (`src/engine/index.ts`) — never a deeper module.
 
-For the full staged roadmap, see `PROJECT.md`. Stages 1–3 (`bootstrap-engine-skeleton`, `content-packs-v1`, `levelgen-and-fov`) are complete. Next is the queued **APK pipeline** change (produce an installable Android APK), then Stage 4 (`expo-glyph-renderer`).
+For the full staged roadmap, see `PROJECT.md`. Stages 1–3 (`bootstrap-engine-skeleton`, `content-packs-v1`, `levelgen-and-fov`) are complete. The **APK pipeline** change (produce an installable Android APK) is in progress — workflow authored, pending its first live tag run — before Stage 5 (`expo-glyph-renderer`).
 
 ## Constraints
 - Do not add features ahead of the current stage (no levelgen/FOV/AI/combat/render until their stage).

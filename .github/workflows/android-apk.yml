@@ -1,0 +1,164 @@
+name: Android APK
+
+# Trigger model (design D3):
+#   * a version tag push (v*) builds and attaches the APK to a GitHub Release
+#   * workflow_dispatch builds the same APK; it always uploads a workflow
+#     artifact and, when a `version` input is given, also attaches a Release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional release tag to attach the APK to (e.g. v0.1.0).'
+        required: false
+        type: string
+
+# Publishing a Release needs write access to repository contents (design D6).
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    env:
+      APK_PATH: android/app/build/outputs/apk/release/app-release.apk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Continuous Native Generation: the android/ project is generated on the
+      # runner from app.json + config plugins. It is gitignored and never committed.
+      - name: Prebuild Android project
+        run: npx expo prebuild --platform android --no-install
+
+      # Cache Gradle after prebuild so the key can hash the generated Gradle files.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
+
+      # Loud failure: a missing or zero-byte APK must fail the job, not silently pass.
+      - name: Assert APK exists and is non-empty
+        run: |
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::APK not found at $APK_PATH"
+            echo "--- android/app/build/outputs tree ---"
+            find android/app/build/outputs -type f 2>/dev/null || true
+            exit 1
+          fi
+          if [ ! -s "$APK_PATH" ]; then
+            echo "::error::APK at $APK_PATH is zero bytes"
+            exit 1
+          fi
+          ls -l "$APK_PATH"
+
+      # Signing sanity check: the release variant is debug-signed (design D2).
+      - name: Verify APK signature
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -z "$SDK" ]; then
+            echo "::error::ANDROID_HOME/ANDROID_SDK_ROOT is not set"
+            exit 1
+          fi
+          # Intentionally pick the highest build-tools version present on the runner.
+          APKSIGNER="$(find "$SDK/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found under $SDK/build-tools"
+            exit 1
+          fi
+          echo "Using $APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK_PATH"
+
+      - name: Name the APK asset
+        id: asset
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ] && ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+            echo "::error::Invalid version input '$INPUT_VERSION': allowed characters are A-Z a-z 0-9 . _ -"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
+            TAG="$INPUT_VERSION"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            TAG="$REF_NAME"
+          else
+            TAG=""
+          fi
+          if [ -n "$TAG" ]; then
+            ASSET="crawl-${TAG}.apk"
+          else
+            ASSET="crawl-${GITHUB_SHA::7}.apk"
+          fi
+          cp "$APK_PATH" "$ASSET"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "APK asset: $ASSET"
+
+      # Manual dispatch always uploads a workflow artifact (design D6).
+      - name: Upload workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-android-apk
+          path: ${{ steps.asset.outputs.asset }}
+          if-no-files-found: error
+
+      # Create the Release, or upload/replace the asset if it already exists (idempotent).
+      - name: Publish GitHub Release
+        if: steps.asset.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.asset.outputs.tag }}
+          ASSET: ${{ steps.asset.outputs.asset }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; uploading/replacing asset."
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            # No --target: on a tag push the tag already exists, and specifying a
+            # workflow-modifying commit as the target makes the API return 404 for
+            # GITHUB_TOKEN. On dispatch, gh creates the tag at the default-branch HEAD.
+            echo "Creating release $TAG."
+            gh release create "$TAG" "$ASSET" \
+              --title "$TAG" \
+              --notes "Automated release for $TAG. Installable Android APK attached (debug-signed; sideload/testing only)."
+          fi
+          # `gh release create` with assets can leave a draft on a partial run; force
+          # publication so a re-run into an existing draft still ships the APK.
+          gh release edit "$TAG" --draft=false

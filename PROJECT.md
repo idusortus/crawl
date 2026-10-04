@@ -43,7 +43,7 @@ npm start         # expo start
 - No UI, rendering, input, or Expo runtime wiring — the engine is headless.
 - No content packs or zod schemas (Stage 2).
 - No level generation or FOV (Stage 3).
-- No monster AI, combat, items, stairs, save/load I/O, or permadeath (Stage 5).
+- No monster AI, combat, items, stairs, save/load I/O, or permadeath (Stage 6).
 - No ECS, scripting engine, event bus, or abstractions built ahead of a second use case.
 
 ## Success Criteria
@@ -56,7 +56,7 @@ npm start         # expo start
 1. **`bootstrap-engine-skeleton`** — pure-TS grid, entities, seeded RNG, `applyCommand → events`, event log, Vitest. *(complete)*
 2. **`content-packs-v1`** — pack loader + zod schema; tiny fantasy pack; `use-item` command/event drawing from the injected RNG. *(complete)*
 3. **`levelgen-and-fov`** — seeded BSP level generation + named-generator registry, recursive-shadowcasting FOV, stored explored mask, deterministic `descend`. *(complete)*
-4. **APK pipeline** — build/CI change to produce an installable Android APK. *(next — queued by the user immediately after Stage 3, before further engine work)*
+4. **APK pipeline** — build/CI change to produce an installable Android APK. *(in progress — workflow authored and locally verified; the first live tag run is the authoritative build check)*
 5. `expo-glyph-renderer` — Expo Router shell + glyph renderer + input mapping.
 6. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load.
 7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test).

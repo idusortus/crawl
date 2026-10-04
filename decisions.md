@@ -12,6 +12,23 @@
 
 ---
 
+## 2026-10-04 — APK pipeline: local Gradle on the runner, debug-keystore signing, tag + dispatch triggers
+
+**Context:** After Stage 3 the user queued a build/CI change to produce an installable Android APK before further engine work. Three choices were locked with the user before writing the change: how to build (EAS cloud vs. local Gradle), how to sign, and how to trigger. The change is tooling/CI only, so it carries `skip_specs: true` (no behavior change, no spec deltas).
+
+**Choice:**
+- **Build on the GitHub runner via CNG + local Gradle.** `npx expo prebuild --platform android --no-install` generates `android/` (gitignored), then `./gradlew assembleRelease` builds `app-release.apk`. No Expo account, EAS token, or cloud minutes. Chosen over EAS Build (needs an external account/token) and over committing `android/` (defeats CNG).
+- **Debug-keystore signing (zero secrets).** The generated Gradle release buildType uses `signingConfigs.debug`; the artifact is sideload/test-only — explicitly not Play-Store-valid and not upgrade-stable against a future real keystore. Production signing is a documented follow-up (`SIGNING_*` secrets + a `signingConfigs.release` block).
+- **Triggers: `push: tags: ['v*']` and `workflow_dispatch`.** A tag builds and attaches `crawl-<tag>.apk` to a GitHub Release via the built-in `GITHUB_TOKEN` (`permissions: contents: write`, idempotent); manual dispatch always uploads a workflow artifact.
+- **Toolchain pins:** JDK 17 (temurin), Node 22.x, no `expo-build-properties`; effective RN 0.86.3 / Expo SDK 57 defaults are **compileSdk 36 / targetSdk 36 / buildTools 36.0.0** (NOT the design's initially-assumed 37/37.0.0), and `ubuntu-latest` ships platform `android-36`.
+- **Review-driven hardening:** `gh release create` omits `--target` (a workflow-modifying tagged commit makes the Releases API return 404 for `GITHUB_TOKEN`); `gh release edit --draft=false` after upload (guards a stranded draft); an empty-SDK guard before apksigner discovery; the `version` input validated `^[A-Za-z0-9._-]+$`.
+
+**Trade-offs:** The APK is debug-signed (test-only, not upgrade-stable). The first live run may auto-download NDK `27.1.12297006` (~1 GB) because the runner ships 27.3+ — accepted as the authoritative first-run check. CI consumes runner minutes per tag. The app still boots the placeholder screen until Stage 5 makes it worth installing.
+
+**Revisit:** When a production / Play-Store path is wanted, add a real keystore + a `signingConfigs.release` block. If the first run fails on the NDK, add `expo-build-properties` pinning an installed NDK (one line). If EAS becomes desirable, replace only the build steps and keep the trigger/release shape. Otherwise never — the delivery path is the operating model.
+
+---
+
 ## 2026-10-04 — Public generator API needs an explicit size floor (or clamping) and a small-size boundary test
 
 **Context:** Review of `levelgen-and-fov` found `generateBspLevel`/`generateLevel` claim "the outer ring of the grid is never carved" but leak onto the outer boundary for small requested sizes. `generateBspLevel` calls `buildTree` whenever `interior.{width,height} >= MIN_ROOM (3)`, but `placeRoom` assumes the region is at least `MIN_LEAF (5)`; on a 3-wide region `maxWidth = min(9, region-2) = 1`, and `randInt(rng, 3, 1)` silently returns `3` (its documented `max < min` collapse), so the room overshoots the region into the boundary ring. Concretely `generateLevel({width:5, height:5, ...})` yields floor tiles at `x = width-1` and `y = height-1`, violating the level-generation spec requirement "The outer boundary is non-passable". The existing boundary test only exercises 40×30; the degenerate-size tests only exercise 1×1 and 3×3 (which route to the single-tile branch), so `5x5`, `5x6`, `6x5`, `7x5`, … were entirely uncovered. `descend` hardcodes 40×30, so the shipped game path is unaffected — but `generateLevel` is public API and the spec names no size floor.

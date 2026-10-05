@@ -145,6 +145,24 @@ export interface AttackCommand {
 }
 
 /**
+ * A command to fire the equipped ranged weapon at an explicit target tile
+ * (change `mobile-client-playability`, design D3; engine/combat spec "Ranged
+ * attack resolved against an explicit target"; engine/command-loop spec "Ranged
+ * attack command").
+ *
+ * It carries only the target `Position` — content is referenced by id through
+ * the loaded pack, never embedded (design D3/D8). Resolving the weapon's range
+ * and damage requires pack data, so `ranged-attack` is resolved only by
+ * `applyCommandWithPack`; the content-free `applyCommand` rejects it as
+ * `unknown-command:ranged-attack` rather than reaching for an ambient pack. A
+ * missing or non-numeric target degrades to `noop('malformed-command')`.
+ */
+export interface RangedAttackCommand {
+  type: 'ranged-attack';
+  target: Position;
+}
+
+/**
  * A command to pick up the floor item on the player's tile (change
  * `core-gameplay-loop`, design D7; engine/item-use spec "Items lie on the floor
  * and can be picked up" and engine/command-loop spec "Item pickup command").
@@ -166,6 +184,7 @@ export type Command =
   | UseItemCommand
   | DescendCommand
   | AttackCommand
+  | RangedAttackCommand
   | PickupCommand;
 
 /** Emitted when an entity successfully steps into a new tile. */

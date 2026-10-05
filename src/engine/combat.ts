@@ -3,9 +3,9 @@
  *
  * This module mirrors the effect-registry pattern in `effects.ts`: a small,
  * enumerated map from a **damage kind** string to a **pure resolver**. The
- * registry is keyed on a kind id; v1 registers exactly one kind under the
- * exported constant `MELEE_DAMAGE_KIND = 'melee'`, used both at the attack call
- * site and in tests instead of a bare literal.
+ * registry is keyed on a kind id; it registers two kinds under the exported
+ * constants `MELEE_DAMAGE_KIND = 'melee'` and `RANGED_DAMAGE_KIND = 'ranged'`,
+ * used both at the attack call sites and in tests instead of bare literals.
  *
  * Resolver contract:
  *
@@ -49,6 +49,17 @@ import type { Entity } from './types';
  * constant instead of a bare `'melee'` literal (design D2 / task 5.1).
  */
 export const MELEE_DAMAGE_KIND = 'melee';
+
+/**
+ * The ranged damage kind (change `mobile-client-playability`, design D3).
+ *
+ * Registered alongside `MELEE_DAMAGE_KIND` so a ranged hit emits an `attacked`
+ * event whose `kind` is `'ranged'`, letting an event stream (and a replay) tell
+ * a shot apart from a melee blow while sharing the exact same damage
+ * computation. Exported so the ranged call site and tests share the constant
+ * rather than a bare literal.
+ */
+export const RANGED_DAMAGE_KIND = 'ranged';
 
 /**
  * The fixed base attack used when an entity carries no copied `attack` value.
@@ -122,34 +133,43 @@ function withHp(target: Entity, hp: number): Entity {
 }
 
 /**
- * The v1 melee resolver: damage is the attacker's copied attack value, drawn as
- * an inclusive integer in `[1, attack]` from the injected seeded source. The
- * draw is deliberate (a `randInt` happens even when `attack === 1`, where the
- * range collapses to a single value) so an attack is always a seeded event and
- * replay reproducibility is exercised rather than trivially satisfied.
+ * Builds a damage resolver that stamps a fixed damage `kind` onto every hit.
  *
- * `amount = randInt(rng, 1, attack)`. The target's HP is reduced by `amount`; it
- * may go to zero or below, which is what lets the world layer detect death
- * (Phase 5).
+ * `DamageResolver` receives no registry key and `resolveDamage` never passes
+ * one, so the emitted `applied.kind` must be captured by a closure: a bare
+ * alias of `resolveMelee` would always report `MELEE_DAMAGE_KIND`. Melee and
+ * ranged share this exact computation (a seeded `randInt(rng, 1, attack)` draw,
+ * an HP reduction on a copy, and no mutation of either entity), so the two
+ * kinds cannot drift apart — only the reported `kind` differs.
+ *
+ * The draw is deliberate even when `attack === 1` (the range collapses to a
+ * single value): an attack is always a seeded event, so replay reproducibility
+ * is exercised rather than trivially satisfied.
  */
-function resolveMelee(
-  attacker: Entity,
-  target: Entity,
-  rng: Rng,
-): DamageResolution {
-  const attack = attackOf(attacker);
-  const amount = randInt(rng, 1, attack);
-  const targetAfter = withHp(target, entityHp(target) - amount);
-  return {
-    targetAfter,
-    applied: {
-      kind: MELEE_DAMAGE_KIND,
-      amount,
-      attackerId: attacker.id,
-      targetId: target.id,
-    },
+function makeDamageResolver(kind: string): DamageResolver {
+  return (attacker: Entity, target: Entity, rng: Rng): DamageResolution => {
+    const attack = attackOf(attacker);
+    const amount = randInt(rng, 1, attack);
+    const targetAfter = withHp(target, entityHp(target) - amount);
+    return {
+      targetAfter,
+      applied: {
+        kind,
+        amount,
+        attackerId: attacker.id,
+        targetId: target.id,
+      },
+    };
   };
 }
+
+/**
+ * The v1 melee resolver: damage is the attacker's copied attack value, drawn as
+ * an inclusive integer in `[1, attack]` and stamped with `MELEE_DAMAGE_KIND`.
+ * The target's HP is reduced by `amount`; it may go to zero or below, which is
+ * what lets the world layer detect death (Phase 5).
+ */
+const resolveMelee = makeDamageResolver(MELEE_DAMAGE_KIND);
 
 /**
  * The registry: damage kind -> resolver.
@@ -161,6 +181,7 @@ function resolveMelee(
  */
 export const damageRegistry: Record<string, DamageResolver> = {
   [MELEE_DAMAGE_KIND]: resolveMelee,
+  [RANGED_DAMAGE_KIND]: makeDamageResolver(RANGED_DAMAGE_KIND),
 };
 
 /**

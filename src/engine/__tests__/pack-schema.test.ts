@@ -218,10 +218,10 @@ describe('pack schema — missing required stat', () => {
     expectFailureWith(pack, 'attack');
   });
 
-  it('rejects an item missing its effect', () => {
+  it('rejects an item that declares neither an effect nor a ranged descriptor', () => {
     const pack = validFantasyPack();
     pack.items = [{ id: 'potion', name: 'Potion', glyph: '!' }];
-    expectFailureWith(pack, 'items[0]', 'effect');
+    expectFailureWith(pack, 'items[0]', 'effect', 'ranged');
   });
 
   it('rejects an item effect with an unknown kind', () => {
@@ -230,6 +230,73 @@ describe('pack schema — missing required stat', () => {
       { id: 'wand', name: 'Wand', glyph: '/', effect: { kind: 'explode', radius: 3 } },
     ];
     expectFailureWith(pack, 'items[0]', 'effect');
+  });
+});
+
+describe('pack schema — ranged weapon descriptor', () => {
+  it('accepts a weapon-only item that declares ranged and no effect', () => {
+    const pack = validFantasyPack();
+    pack.items = [
+      {
+        id: 'shortbow',
+        name: 'Shortbow',
+        glyph: ')',
+        ranged: { range: 6, damage: 4 },
+      },
+    ];
+
+    const result = validatePack(pack);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const weapon = result.pack.items[0];
+    expect(weapon.effect).toBeUndefined();
+    expect(weapon.ranged).toEqual({ range: 6, damage: 4 });
+  });
+
+  it('rejects an item that declares neither effect nor ranged and names both', () => {
+    const pack = validFantasyPack();
+    pack.items = [{ id: 'inert', name: 'Inert Thing', glyph: '?' }];
+    expectFailureWith(pack, 'items[0]', 'effect', 'ranged');
+  });
+
+  it('accepts an item that declares both an effect and a ranged descriptor', () => {
+    const pack = validFantasyPack();
+    pack.items = [
+      {
+        id: 'flaming-sword',
+        name: 'Flaming Sword',
+        glyph: '/',
+        effect: { kind: 'heal', amount: 1 },
+        ranged: { range: 2, damage: 3 },
+      },
+    ];
+    expect(validatePack(pack).ok).toBe(true);
+  });
+
+  it('rejects a non-integer range at the ranged path', () => {
+    const pack = validFantasyPack();
+    pack.items = [
+      {
+        id: 'shortbow',
+        name: 'Shortbow',
+        glyph: ')',
+        ranged: { range: 2.5, damage: 4 },
+      },
+    ];
+    expectFailureWith(pack, 'items[0]', 'ranged', 'range');
+  });
+
+  it('rejects a non-positive damage at the ranged path', () => {
+    const pack = validFantasyPack();
+    pack.items = [
+      {
+        id: 'shortbow',
+        name: 'Shortbow',
+        glyph: ')',
+        ranged: { range: 6, damage: 0 },
+      },
+    ];
+    expectFailureWith(pack, 'items[0]', 'ranged', 'damage');
   });
 });
 

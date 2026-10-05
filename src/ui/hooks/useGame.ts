@@ -1,7 +1,8 @@
 /**
  * `useGame` — the client-side game hook (change `expo-glyph-renderer`, design
  * D4/D7; tasks 2.3/2.4; extended by `core-gameplay-loop` task 9.3 / design D10;
- * extended by `ui-fit-and-persistence` design D3/D4).
+ * extended by `ui-fit-and-persistence` design D3/D4; fresh seed per run by
+ * `mobile-client-playability` design D4 / task 7.1).
  *
  * Owns the `{ state, pack }` pair, the immutable command-dispatch contract, and
  * the client-side save/resume flow. This is the ONLY place in `src/ui` that
@@ -53,8 +54,22 @@ import { createAsyncStorageAdapter, createSaveStorage } from '../logic/saveStora
 import type { SaveStorage } from '../logic/saveStorage';
 import type { RunState } from '../logic/save';
 
-/** The default run seed until a seed-selection UI exists. */
-const DEFAULT_SEED = 1;
+/**
+ * Draws a fresh seed at the client boundary (change
+ * `mobile-client-playability`, design D4; task 7.1).
+ *
+ * This is the one place in `src/ui` that consults the wall clock and ambient
+ * randomness. The ENGINE must not — it receives this number as the injected
+ * seed and stays fully deterministic for a given seed (ESLint enforces that on
+ * `src/engine/**`). Mixing the two sources keeps two rapid launches (which can
+ * share a millisecond) from colliding. The value is a non-negative integer;
+ * `createRng` coerces it with `>>> 0` regardless.
+ */
+export function freshSeed(): number {
+  const time = Date.now() % 0x7fffffff;
+  const random = Math.floor(Math.random() * 0x7fffffff);
+  return time ^ random;
+}
 
 /**
  * The durable store, created once at module scope from the real AsyncStorage
@@ -152,8 +167,16 @@ function asError(caught: unknown): GameError {
  * `loadGame` runs in a single lazy `useState` initializer, so the pack is
  * loaded and the level generated exactly once for the lifetime of the hook.
  */
-export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
-  const [startup, setStartup] = useState<StartupResult>(() => loadGame(seed));
+export function useGame(seed?: number): UseGameResult {
+  // Build the first run once. An explicit `seed` (tests/stories, or a future
+  // seed picker) pins it; otherwise `freshSeed()` draws at the client boundary
+  // so a cold start varies run to run (design D4). The lazy initializer runs
+  // exactly once, so the draw is single-shot and never re-randomizes on render
+  // (spec: app-shell "Each run starts from a fresh seed" / "An explicit seed is
+  // honored").
+  const [startup, setStartup] = useState<StartupResult>(() =>
+    loadGame(seed ?? freshSeed()),
+  );
 
   // The client-side save slot, hydrated once from durable storage. The live
   // `GameState` is built synchronously above, so first paint is the fresh run
@@ -173,11 +196,6 @@ export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
   // the live state at save time so they can never drift apart.
   const logRef = useRef<Command[]>([]);
   const appliedRef = useRef(0);
-
-  // The seed of the *current* run (the prop is only the initial seed). `newRun`
-  // increments this, so pressing "New run" repeatedly walks seeds rather than
-  // rebuilding the same level from the constant prop (finding 3).
-  const seedRef = useRef(seed);
 
   // The hydration barrier (design D3). `false` until the one-time load effect
   // settles (success or failure); save/auto-save are no-ops while false, so a
@@ -299,10 +317,10 @@ export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
     // is available after game over").
     const current = startup;
     if (current.pack === undefined) return;
-    // Advance the current run's seed, not the constant prop, so repeated
-    // presses yield distinct levels (finding 3).
-    const nextSeed = seedRef.current + 1;
-    seedRef.current = nextSeed;
+    // Draw a fresh seed for the new run rather than walking the initial seed, so
+    // every "New run" produces a different level (design D4; spec: app-shell
+    // "Repeated new runs differ").
+    const nextSeed = freshSeed();
     logRef.current = [];
     appliedRef.current = 0;
     const nextState = createInitialState(nextSeed, current.pack);

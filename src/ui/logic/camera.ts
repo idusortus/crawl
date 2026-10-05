@@ -69,3 +69,30 @@ export function axisOffset(
   const [min, max] = clampRange(mapAxis, viewportAxis);
   return Math.round(Math.min(Math.max(centred, min), max));
 }
+
+/**
+ * Resolves the dp offset actually applied to the map on one axis, for
+ * hit-testing a tap (change `mobile-client-playability`, design D7; task 5.3).
+ *
+ * When the fitted map fits the viewport on the axis it is centred by the layout,
+ * so the offset a touch must be measured against is the centring margin
+ * `(viewportAxis - fittedAxis) / 2` (the camera translation is then `0`). When
+ * the map overflows the axis it is pinned to `flex-start` and the camera
+ * translation moved it, so that translation is the applied offset. Using exactly
+ * this value for the touch→tile conversion makes a tap land on the tile under
+ * the finger.
+ *
+ * @param fittedAxis - The fitted map size on this axis in dp (`grid.width * tileSize`).
+ * @param viewportAxis - The measured viewport size on this axis in dp.
+ * @param cameraOffset - The camera translation on this axis in dp ({@link axisOffset}).
+ * @returns The dp offset applied to the map's origin before a tile is drawn.
+ */
+export function appliedAxisOffset(
+  fittedAxis: number,
+  viewportAxis: number,
+  cameraOffset: number,
+): number {
+  return fittedAxis <= viewportAxis
+    ? (viewportAxis - fittedAxis) / 2
+    : cameraOffset;
+}

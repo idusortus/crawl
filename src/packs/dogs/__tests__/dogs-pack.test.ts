@@ -63,6 +63,9 @@ describe('dogs pack — schema + composition', () => {
     const bone = loaded.item('bone');
     expect(bone.name).toBe('Bone');
     expect(bone.glyph).toBe('b');
+    if (bone.effect === undefined) {
+      throw new Error('bone must declare an effect');
+    }
     expect(bone.effect).toEqual({ kind: 'heal', amount: 6 });
   });
 });
@@ -115,6 +118,12 @@ describe('dogs pack — vocabulary reuse (the leak sentinel)', () => {
       (option) => option.shape.kind.value,
     );
     for (const item of loaded.pack.items) {
+      if (item.effect === undefined) {
+        // A weapon (ranged-only item) carries no effect; assert it declares the
+        // ranged descriptor instead of an effect kind.
+        expect(item.ranged).toBeDefined();
+        continue;
+      }
       expect(schemaKinds).toContain(item.effect.kind);
     }
   });

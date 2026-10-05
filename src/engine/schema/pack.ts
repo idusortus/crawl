@@ -3,7 +3,8 @@
  *
  * A pack is pure declarative data: identity + three entry collections
  * (classes, monsters, items) plus a render glyph and stats per entry. Items
- * carry a discriminated-union `effect` that is *data, not code*, so packs are
+ * carry at least one of a discriminated-union `effect` (used) or a `ranged`
+ * weapon descriptor (fired); both are *data, not code*, so packs are
  * serializable and theme-agnostic (design D3/D8).
  *
  * `zod` schemas are the single source of truth; the exported `Pack`/`PackClass`/
@@ -134,14 +135,42 @@ export const itemEffectSchema = z.discriminatedUnion('kind', [
     }),
 ]);
 
-/** An item entry: id, name, glyph, and a required declarative effect. */
-export const packItemSchema = z.object({
-  id: z.string().min(1, 'id must be a non-empty string'),
-  name: z.string().min(1, 'name must be a non-empty string'),
-  glyph: glyphSchema,
-  effect: itemEffectSchema,
-  description: z.string().optional(),
+/**
+ * A ranged-weapon descriptor: plain declarative data (design D3).
+ *
+ * - `range`: how far the weapon can reach, a positive integer measured in tiles
+ *   (the engine gates shots on Chebyshev distance).
+ * - `damage`: the weapon's attack value, a positive number.
+ *
+ * Kept as data — packs never embed behavior (design D3/D8).
+ */
+export const rangedDescriptorSchema = z.object({
+  range: z.number().int().positive('range must be a positive integer'),
+  damage: z.number().positive('damage must be a positive number'),
 });
+
+/**
+ * An item entry: id, name, glyph, and **at least one** of a consumable
+ * declarative `effect` or a `ranged` weapon descriptor (design D3/D8).
+ *
+ * `effect` and `ranged` are each optional so an item can be a weapon that is
+ * fired rather than used; the refinement rejects an item declaring neither, so
+ * no entry is inert. The refinement's path points at `effect` and its message
+ * names both fields, so a pack author sees exactly what is missing.
+ */
+export const packItemSchema = z
+  .object({
+    id: z.string().min(1, 'id must be a non-empty string'),
+    name: z.string().min(1, 'name must be a non-empty string'),
+    glyph: glyphSchema,
+    effect: itemEffectSchema.optional(),
+    ranged: rangedDescriptorSchema.optional(),
+    description: z.string().optional(),
+  })
+  .refine((item) => item.effect !== undefined || item.ranged !== undefined, {
+    message: 'item must declare at least one of effect or ranged',
+    path: ['effect'],
+  });
 
 /**
  * Reject duplicate ids within a single collection, naming the duplicated id and
@@ -211,6 +240,9 @@ export type PackItem = z.infer<typeof packItemSchema>;
 
 /** A declarative item effect (discriminated union of plain data). */
 export type ItemEffect = z.infer<typeof itemEffectSchema>;
+
+/** A declarative ranged-weapon descriptor (`{ range, damage }`). */
+export type RangedDescriptor = z.infer<typeof rangedDescriptorSchema>;
 
 /** Result of a non-throwing pack validation (design D2/D5). */
 export type PackValidationResult =

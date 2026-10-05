@@ -35,6 +35,7 @@ import {
   damageRegistry,
   entityHp,
   MELEE_DAMAGE_KIND,
+  RANGED_DAMAGE_KIND,
   resolveDamage,
 } from '../combat';
 import { attacked, death, playerDied } from '../events';
@@ -96,6 +97,27 @@ describe('damage registry', () => {
   it('registers the melee kind under the exported MELEE_DAMAGE_KIND constant', () => {
     expect(MELEE_DAMAGE_KIND).toBe('melee');
     expect(typeof damageRegistry[MELEE_DAMAGE_KIND]).toBe('function');
+  });
+
+  it('registers the ranged kind and stamps applied.kind = ranged', () => {
+    // The ranged kind is registered alongside melee (change
+    // `mobile-client-playability`), and its resolver closes over the kind so the
+    // emitted `applied.kind` is `ranged` rather than the hardcoded melee value.
+    expect(RANGED_DAMAGE_KIND).toBe('ranged');
+    expect(typeof damageRegistry[RANGED_DAMAGE_KIND]).toBe('function');
+
+    const hit = resolveDamage(
+      RANGED_DAMAGE_KIND,
+      attacker(),
+      target(),
+      createRng(7),
+    );
+    expect(hit).toBeDefined();
+    expect(hit?.applied.kind).toBe('ranged');
+    // It shares the melee computation: a bounded seeded draw and HP reduction.
+    expect(hit?.applied.amount).toBeGreaterThanOrEqual(1);
+    expect(hit?.applied.amount).toBeLessThanOrEqual(4);
+    expect(hit?.targetAfter.hp).toBe(5 - (hit?.applied.amount ?? 0));
   });
 
   it('returns undefined for an unknown damage kind (safe miss, no throw)', () => {

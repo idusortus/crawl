@@ -49,6 +49,7 @@ export type {
   PickupCommand,
   PlayerDiedEvent,
   Position,
+  RangedAttackCommand,
   RngState,
   UseItemCommand,
 } from './types';
@@ -66,6 +67,7 @@ export type {
   PackItem,
   PackMonster,
   PackValidationResult,
+  RangedDescriptor,
 } from './schema/index';
 
 // Content-pack loader + id resolution (design D5).
@@ -93,6 +95,7 @@ export {
   damageRegistry,
   entityHp,
   MELEE_DAMAGE_KIND,
+  RANGED_DAMAGE_KIND,
   resolveDamage,
 } from './combat';
 export type {

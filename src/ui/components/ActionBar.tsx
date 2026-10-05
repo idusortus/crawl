@@ -1,18 +1,27 @@
 /**
  * `ActionBar` — the non-directional gameplay controls (change
  * `expo-glyph-renderer`, design D3; task 4.1; extended by
- * `core-gameplay-loop` task 9.2 / design D10).
+ * `core-gameplay-loop` task 9.2 / design D10; ranged control added by
+ * `mobile-client-playability` tasks 6.1/6.4 / design D7).
  *
  * Renders the on-screen controls for the core gameplay actions — pickup, the
- * carried-item list (use-item), and save/resume, plus the existing Descend
- * button. Every control is a stateless `Pressable` that dispatches a command (or
- * a defined save/resume action) through the game hook's `dispatch`/`save`/
- * `resume`; it holds no state and never mutates `GameState` (design D10; spec:
- * input-mapping "Every input dispatches a command or a defined action without
- * mutating state").
+ * carried consumable list (use-item), the ranged-attack control, and
+ * save/resume, plus the existing Descend button. Every control is a stateless
+ * `Pressable` that dispatches a command (or a defined save/resume/target-mode
+ * action) through the game hook's `dispatch`/`save`/`resume` or the
+ * presentation callback; it holds no state and never mutates `GameState`
+ * (design D10; spec: input-mapping "Every input dispatches a command or a
+ * defined action without mutating state").
  *
  * The carried-item buttons are derived from `state.carriedItemIds`, so the list
  * reflects live state and a use always names an id the player actually carries.
+ * **Ranged weapons are filtered out of that list** (task 6.4): a weapon is
+ * fired through the ranged control, never consumed as a use-item.
+ *
+ * The ranged control is rendered **only** while the player carries an item whose
+ * pack entry declares a `ranged` descriptor, and its pressed state toggles
+ * ephemeral target mode owned by `GameScreen` (design D7). It is hidden
+ * otherwise, so it never clutters the controls when unusable.
  *
  * Save feedback (change `ui-fit-and-persistence`, design D3): a successful save
  * flips the hook's presentation-only `savedIndicator`, and a storage/hydration
@@ -24,6 +33,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useGameContext } from '../providers/GameProvider';
+import { hasRangedWeapon, isRangedWeapon } from '../logic/ranged';
 import { colors } from '../theme/colors';
 
 /** One on-screen action button, described declaratively. */
@@ -34,13 +44,27 @@ interface ActionButton {
   accessibilityLabel: string;
   /** Dispatches the command / invokes the action when pressed. */
   onPress: () => void;
+  /** True when the control reflects an active mode (renders highlighted). */
+  active?: boolean;
 }
 
-export function ActionBar() {
-  const { dispatch, save, resume, hasSave, state, savedIndicator, saveError } =
+/** Props for {@link ActionBar}. */
+export interface ActionBarProps {
+  /** Whether ranged target mode is currently active (presentation-only). */
+  targetMode: boolean;
+  /** Toggles ranged target mode; pressing again cancels it. */
+  onToggleTargetMode: () => void;
+}
+
+export function ActionBar({ targetMode, onToggleTargetMode }: ActionBarProps) {
+  const { dispatch, save, resume, hasSave, state, pack, savedIndicator, saveError } =
     useGameContext();
 
   const carried = state?.carriedItemIds ?? [];
+  const rangedCarried = hasRangedWeapon(pack, carried);
+  // A weapon is fired through the ranged control, so it is never offered as a
+  // consumable (task 6.4).
+  const usableItems = carried.filter((itemId) => !isRangedWeapon(pack, itemId));
 
   const buttons: ActionButton[] = [
     {
@@ -53,12 +77,22 @@ export function ActionBar() {
       accessibilityLabel: 'Descend to the next level',
       onPress: () => dispatch({ type: 'descend' }),
     },
-    {
-      label: 'Save',
-      accessibilityLabel: 'Save the current run',
-      onPress: save,
-    },
   ];
+  if (rangedCarried) {
+    buttons.push({
+      label: targetMode ? 'Cancel' : 'Fire',
+      accessibilityLabel: targetMode
+        ? 'Cancel ranged targeting'
+        : 'Enter ranged targeting mode',
+      onPress: onToggleTargetMode,
+      active: targetMode,
+    });
+  }
+  buttons.push({
+    label: 'Save',
+    accessibilityLabel: 'Save the current run',
+    onPress: save,
+  });
   if (hasSave) {
     buttons.push({
       label: 'Resume',
@@ -78,6 +112,7 @@ export function ActionBar() {
             onPress={button.onPress}
             style={({ pressed }) => [
               styles.button,
+              button.active === true && styles.active,
               pressed === true && styles.pressed,
             ]}
           >
@@ -86,10 +121,10 @@ export function ActionBar() {
         ))}
       </View>
       <View style={styles.row}>
-        {carried.length === 0 ? (
-          <Text style={styles.empty}>No items carried</Text>
+        {usableItems.length === 0 ? (
+          <Text style={styles.empty}>No items to use</Text>
         ) : (
-          carried.map((itemId, index) => (
+          usableItems.map((itemId, index) => (
             <Pressable
               key={`${itemId}-${index}`}
               accessibilityRole="button"
@@ -134,6 +169,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     borderWidth: 1,
     borderColor: colors.player,
+  },
+  active: {
+    backgroundColor: colors.floor,
+    borderColor: colors.player,
+    borderWidth: 2,
   },
   pressed: {
     backgroundColor: colors.floor,

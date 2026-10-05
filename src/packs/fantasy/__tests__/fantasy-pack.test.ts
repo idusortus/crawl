@@ -3,8 +3,8 @@
  *
  * These assert that the shipped fantasy pack is *real data* the engine accepts:
  * it passes `validatePack`, meets `loadPack`'s composition floor with exactly
- * 2 classes / 3 monsters / 5 items, carries at least one deterministic and one
- * seeded-random item effect, and resolves by id.
+ * 2 classes / 3 monsters / 6 items, carries at least one deterministic and one
+ * seeded-random item effect plus a ranged weapon, and resolves by id.
  *
  * The test lives under `src/packs` (co-located with the data it guards) rather
  * than `src/engine/__tests__` because the pack is a `src/packs` artifact; the
@@ -22,13 +22,13 @@ describe('fantasy pack — schema + composition', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('loads with exactly 2 classes, 3 monsters, and 5 items', () => {
+  it('loads with exactly 2 classes, 3 monsters, and 6 items', () => {
     const loaded = loadPack(fantasyPack);
     expect(loaded.pack.id).toBe('fantasy');
     expect(loaded.pack.version).toBe(PACK_VERSION);
     expect(loaded.pack.classes).toHaveLength(2);
     expect(loaded.pack.monsters).toHaveLength(3);
-    expect(loaded.pack.items).toHaveLength(5);
+    expect(loaded.pack.items).toHaveLength(6);
   });
 
   it('resolves a known class id', () => {
@@ -69,23 +69,44 @@ describe('fantasy pack — schema + composition', () => {
     const loaded = loadPack(fantasyPack);
     const potion = loaded.item('healing-potion');
     expect(potion.name).toBe('Healing Potion');
+    if (potion.effect === undefined) {
+      throw new Error('healing-potion must declare an effect');
+    }
     expect(potion.effect).toEqual({ kind: 'heal', amount: 8 });
+  });
+
+  it('resolves a ranged weapon item that declares no effect', () => {
+    const loaded = loadPack(fantasyPack);
+    const shortbow = loaded.item('shortbow');
+    expect(shortbow.name).toBe('Shortbow');
+    expect(shortbow.effect).toBeUndefined();
+    expect(shortbow.ranged).toEqual({ range: 6, damage: 4 });
   });
 });
 
 describe('fantasy pack — item effect coverage', () => {
   it('includes at least one deterministic (heal) effect', () => {
     const loaded = loadPack(fantasyPack);
-    const heals = loaded.pack.items.filter((item) => item.effect.kind === 'heal');
+    const heals = loaded.pack.items.filter(
+      (item) => item.effect !== undefined && item.effect.kind === 'heal',
+    );
     expect(heals.length).toBeGreaterThanOrEqual(1);
   });
 
   it('includes at least one seeded-random (roll-heal) effect', () => {
     const loaded = loadPack(fantasyPack);
     const rolls = loaded.pack.items.filter(
-      (item) => item.effect.kind === 'roll-heal',
+      (item) => item.effect !== undefined && item.effect.kind === 'roll-heal',
     );
     expect(rolls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('includes at least one ranged weapon item', () => {
+    const loaded = loadPack(fantasyPack);
+    const weapons = loaded.pack.items.filter(
+      (item) => item.ranged !== undefined,
+    );
+    expect(weapons.length).toBeGreaterThanOrEqual(1);
   });
 
   it('every item declares a non-empty id, name, and one-character glyph', () => {

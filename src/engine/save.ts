@@ -38,13 +38,14 @@
  * on load").
  *
  * A pack-free replay whose unapplied remainder contains a content-dependent
- * command (`use-item` or `descend`) is rejected **loudly** with a typed
- * `PackRequiredForReplayError` naming the offending command types, rather than
- * silently replaying a world that diverges from the pack-aware run (change
- * `review-fixes-augment`, design D2). This is a precondition **at the replay
- * seam only**: the content-free entry point's own `use-item`/`descend`
- * behavior is unchanged (decisions.md Stage-6 Phase-7/Phase-8), and a remainder
- * of only content-free commands still replays without a pack.
+ * command (`use-item`, `descend`, or `ranged-attack`) is rejected **loudly**
+ * with a typed `PackRequiredForReplayError` naming the offending command types,
+ * rather than silently replaying a world that diverges from the pack-aware run
+ * (change `review-fixes-augment`, design D2; `ranged-attack` added by change
+ * `mobile-client-playability`). This is a precondition **at the replay seam
+ * only**: the content-free entry point's own behavior for those commands is
+ * unchanged (decisions.md Stage-6 Phase-7/Phase-8), and a remainder of only
+ * content-free commands still replays without a pack.
  *
  * `SAVE_VERSION` is deliberately **separate** from `PACK_VERSION`: the save
  * envelope's format and the content pack's format evolve independently.
@@ -119,14 +120,16 @@ export class UnknownSaveVersionError extends Error {
  * command.
  *
  * The content-free entry point has a documented, legitimate noop/unpopulated
- * behavior for `use-item` (`unknown-command:use-item`) and `descend` (an
- * unpopulated level) — decisions.md Stage-6 Phase-7/Phase-8. That asymmetry is
- * only wrong for **replay**, where the caller's intent is to reproduce the
- * original run: silently replaying noop/unpopulated commands produces a state
- * that diverges from the pack-aware run. So `replayCommands` throws this error
- * **before applying anything** when no pack is supplied and the unapplied
- * remainder contains a `use-item` or `descend` command, naming the offending
- * command types (change `review-fixes-augment`, design D2).
+ * behavior for `use-item` (`unknown-command:use-item`), `descend` (an
+ * unpopulated level), and `ranged-attack` (`unknown-command:ranged-attack`) —
+ * decisions.md Stage-6 Phase-7/Phase-8. That asymmetry is only wrong for
+ * **replay**, where the caller's intent is to reproduce the original run:
+ * silently replaying noop/unpopulated commands produces a state that diverges
+ * from the pack-aware run. So `replayCommands` throws this error **before
+ * applying anything** when no pack is supplied and the unapplied remainder
+ * contains a `use-item`, `descend`, or `ranged-attack` command, naming the
+ * offending command types (change `review-fixes-augment`, design D2;
+ * `ranged-attack` added by change `mobile-client-playability`).
  *
  * Supplying the pack restores the correct path; a remainder of only
  * content-free commands (`move`/`attack`/`pickup`) still replays without a pack,
@@ -237,13 +240,15 @@ export function deserializeSave(json: string): SaveEnvelope {
  * The command types whose content-free resolution diverges from the pack-aware
  * one, so they cannot be replayed without a pack (design D2).
  *
- * `use-item` noops (`unknown-command:use-item`) and `descend` generates an
- * unpopulated level on the content-free path — both legitimate for a live
- * caller, both wrong for a replay that means to reproduce a run.
+ * `use-item` noops (`unknown-command:use-item`), `descend` generates an
+ * unpopulated level, and `ranged-attack` noops (`unknown-command:ranged-attack`)
+ * on the content-free path — all legitimate for a live caller, all wrong for a
+ * replay that means to reproduce a run.
  */
 const CONTENT_DEPENDENT_COMMAND_TYPES: ReadonlySet<string> = new Set([
   'use-item',
   'descend',
+  'ranged-attack',
 ]);
 
 /**
@@ -275,12 +280,12 @@ function contentDependentTypes(commands: Command[]): string[] {
  * live consumer would, so the replay advances identically.
  *
  * **Pack-free precondition (design D2).** When no pack is supplied and the
- * unapplied remainder contains a content-dependent command (`use-item` or
- * `descend`), this throws `PackRequiredForReplayError` naming the offending
- * types **before applying anything**, rather than silently producing a state
- * that diverges from the pack-aware run. A pack, an empty remainder
- * (`appliedCount === commands.length`), and a remainder of only content-free
- * commands (`move`/`attack`/`pickup`) replay unchanged.
+ * unapplied remainder contains a content-dependent command (`use-item`,
+ * `descend`, or `ranged-attack`), this throws `PackRequiredForReplayError`
+ * naming the offending types **before applying anything**, rather than silently
+ * producing a state that diverges from the pack-aware run. A pack, an empty
+ * remainder (`appliedCount === commands.length`), and a remainder of only
+ * content-free commands (`move`/`attack`/`pickup`) replay unchanged.
  *
  * `appliedCount` is clamped defensively: a negative value replays the whole log
  * from the start, and a value beyond the log length replays nothing. A

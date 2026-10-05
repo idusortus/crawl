@@ -1,21 +1,31 @@
 /**
- * `MapView` — the fixed glyph grid behind a camera viewport (change
+ * `MapView` — the fitted glyph grid behind a camera viewport (change
  * `expo-glyph-renderer`, design D2/D5; task 3.4; camera added by
- * `ui-fit-and-persistence` design D1/D5, task 1.2).
+ * `ui-fit-and-persistence` design D1/D5, task 1.2; fit-to-width + tap-to-move
+ * added by `mobile-client-playability` design D1/D2/D7, tasks 4.2/4.3/5.3).
  *
- * Reads `GameState` from the game context and draws a fixed 40×30 flex grid of
- * memoized {@link Tile}s inside an outer, clipped viewport `View`. FOV is
- * **derived per render** from `state.grid` + the player position +
- * `DEFAULT_SIGHT_RADIUS` (design D5) and memoized on those inputs; the persistent
- * `state.explored` mask is read directly. Visibility is never stored, matching the
- * engine's model.
+ * Reads `GameState` from the game context and draws the grid of memoized
+ * {@link Tile}s inside an outer, clipped viewport `View`. FOV is **derived per
+ * render** from `state.grid` + the player position + `DEFAULT_SIGHT_RADIUS`
+ * (design D5) and memoized on those inputs; the persistent `state.explored` mask
+ * is read directly. Visibility is never stored, matching the engine's model.
  *
- * The inner map stays the full `width * TILE_SIZE` × `height * TILE_SIZE` dp; the
- * outer viewport clips it and translates it by the camera offset so the player's
- * tile stays visible on a phone-sized screen. The offset is a pure function of the
- * player position and the **measured viewport** (the `flex: 1`, `overflow: 'hidden'`
- * node — not the 560 dp inner map), computed by {@link axisOffset}. It is derived,
- * never stored in `GameState` (the engine keeps "visibility is derived").
+ * The tile side length is fitted to the measured viewport width
+ * (`floor(viewportWidth / grid.width)`, at least 1) so the full level width is
+ * visible (design D1). Before the first `onLayout` the width is 0, so the fixed
+ * `TILE_SIZE` is used for a safe first render. Each axis is centred when the
+ * fitted map fits the measured viewport on that axis, and pinned to `flex-start`
+ * with the clamped camera translation when it overflows (the vertical axis on a
+ * phone).
+ *
+ * A single `Pressable` wrapper handles taps: the touch location plus the applied
+ * per-axis offset is converted to a tile. In normal play a cardinal-adjacent tap
+ * dispatches a `move` (the engine bumps-to-attack when the tile is occupied) and
+ * a non-adjacent tap does nothing. In ranged target mode a tap on a **visible
+ * living monster** (not the player) dispatches a `ranged-attack` at that tile and
+ * exits target mode; any other tap exits target mode without dispatching (task
+ * 6.3; design D7). The target test is the pure `rangedTargetAt` helper so it is
+ * unit-tested without a renderer.
  *
  * Tile resolution is delegated to the pure `tileRender` helper, so this
  * component only maps state → per-tile primitives (glyph/color/background),
@@ -23,7 +33,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
   computeFov,
@@ -34,8 +44,10 @@ import {
 } from '@engine';
 
 import { useGameContext } from '../providers/GameProvider';
-import { axisOffset } from '../logic/camera';
+import { appliedAxisOffset, axisOffset } from '../logic/camera';
 import { tileRender } from '../logic/glyphs';
+import { directionForDelta } from '../logic/input';
+import { rangedTargetAt } from '../logic/ranged';
 import { colors } from '../theme/colors';
 
 import { TILE_SIZE, Tile } from './Tile';
@@ -53,12 +65,20 @@ interface ViewportSize {
   height: number;
 }
 
-export function MapView() {
-  const { state, pack } = useGameContext();
+/** Props for {@link MapView}; target mode is owned by `GameScreen` (design D7). */
+export interface MapViewProps {
+  /** True while ranged target mode is active; taps then aim instead of move. */
+  targetMode?: boolean;
+  /** Invoked after a ranged shot is dispatched or a non-target tap cancels. */
+  onExitTargetMode?: () => void;
+}
+
+export function MapView({ targetMode = false, onExitTargetMode }: MapViewProps) {
+  const { state, pack, dispatch } = useGameContext();
 
   // The visible viewport size, captured from `onLayout` on the clipped outer
-  // node. Initial `0` keeps the first render safe (offset 0) — the map shows its
-  // top-left and adopts the correct camera once layout reports (design D1).
+  // node. Initial `0` keeps the first render safe (fixed tile size, offset 0) —
+  // the map shows its top-left and adopts the fit once layout reports (design D1).
   const [viewport, setViewport] = useState<ViewportSize>({ width: 0, height: 0 });
 
   const player = state && entityById(state.entities, state.playerId);
@@ -70,9 +90,9 @@ export function MapView() {
     return computeFov(state.grid, player.pos, DEFAULT_SIGHT_RADIUS);
   }, [state, player]);
 
-  // Resolve every tile once per (state, visible-mask, pack) change. The grid is
-  // fixed at 1,200 cells; the outer array is re-created only when inputs move,
-  // while the memoized `Tile`s skip re-rendering when their props are unchanged.
+  // Resolve every tile once per (state, visible-mask, pack) change. The outer
+  // array is re-created only when inputs move, while the memoized `Tile`s skip
+  // re-rendering when their props are unchanged.
   const cells = useMemo<Cell[]>(() => {
     if (state === undefined || pack === undefined || visible === undefined) {
       return [];
@@ -102,42 +122,103 @@ export function MapView() {
 
   const { width, height } = state.grid;
 
-  // The camera offset is derived per render from the player + measured viewport.
-  // `player` is defined here (the ready branch implies state + entity resolution),
-  // but guard anyway so the math never reads an undefined tile.
+  // Fit tiles to the measured viewport width (design D1). Before measurement the
+  // width is 0, so fall back to the fixed `TILE_SIZE`.
+  const measured = viewport.width > 0;
+  const tileSize = measured
+    ? Math.max(1, Math.floor(viewport.width / width))
+    : TILE_SIZE;
+
+  const fittedWidth = width * tileSize;
+  const fittedHeight = height * tileSize;
+
+  // A fitted width never exceeds the viewport (floor division), so the
+  // horizontal axis is always centred; the vertical axis is centred only when
+  // the fitted height fits, otherwise it is pinned to `flex-start` and the
+  // clamped camera translates it.
+  const centerX = measured && fittedWidth <= viewport.width;
+  const centerY = viewport.height > 0 && fittedHeight <= viewport.height;
+
+  // The camera translation is derived per render from the player + viewport. For
+  // a centred axis `axisOffset` already returns 0 (the map fits that axis).
   const offsetX =
     player === undefined
       ? 0
-      : axisOffset(
-          width * TILE_SIZE,
-          viewport.width,
-          player.pos.x,
-          TILE_SIZE,
-        );
+      : axisOffset(fittedWidth, viewport.width, player.pos.x, tileSize);
   const offsetY =
     player === undefined
       ? 0
-      : axisOffset(
-          height * TILE_SIZE,
-          viewport.height,
-          player.pos.y,
-          TILE_SIZE,
-        );
+      : axisOffset(fittedHeight, viewport.height, player.pos.y, tileSize);
+
+  // The dp offset actually applied to the map's origin on each axis: the
+  // centring margin when centred, else the camera translation. Hit-testing must
+  // subtract exactly this so a tap lands on the tile the player sees (D7).
+  const appliedX = appliedAxisOffset(fittedWidth, viewport.width, offsetX);
+  const appliedY = appliedAxisOffset(fittedHeight, viewport.height, offsetY);
+
+  const handlePress = (locationX: number, locationY: number) => {
+    if (player === undefined) return;
+    const tile = {
+      x: Math.floor((locationX - appliedX) / tileSize),
+      y: Math.floor((locationY - appliedY) / tileSize),
+    };
+
+    if (targetMode) {
+      // Target mode: a tap on a visible living monster (not the player) fires at
+      // that tile — the engine stays the range/visibility authority and will
+      // no-op an out-of-range or unseen target. Any other tap cancels target
+      // mode without dispatching (task 6.3; design D7).
+      const target = rangedTargetAt(
+        state.grid,
+        state.entities,
+        visible,
+        state.playerId,
+        tile,
+      );
+      if (target !== undefined) {
+        dispatch({ type: 'ranged-attack', target: tile });
+      }
+      onExitTargetMode?.();
+      return;
+    }
+
+    // Normal mode: a cardinal-adjacent tap moves (the engine bumps-to-attack if
+    // the tile is occupied). A non-adjacent tap dispatches nothing, and so does
+    // a tap outside the grid — e.g. in the centring margin when the fitted map
+    // is centred (design D7).
+    const inBounds =
+      tile.x >= 0 && tile.x < width && tile.y >= 0 && tile.y < height;
+    if (!inBounds) return;
+
+    const direction = directionForDelta(player.pos, tile);
+    if (direction !== undefined) {
+      dispatch({ type: 'move', direction });
+    }
+  };
 
   return (
-    <View
-      style={styles.viewport}
+    <Pressable
+      style={[
+        styles.viewport,
+        {
+          alignItems: centerX ? 'center' : 'flex-start',
+          justifyContent: centerY ? 'center' : 'flex-start',
+        },
+      ]}
       onLayout={(event) => {
         const { width: w, height: h } = event.nativeEvent.layout;
         setViewport({ width: w, height: h });
+      }}
+      onPress={(event) => {
+        handlePress(event.nativeEvent.locationX, event.nativeEvent.locationY);
       }}
     >
       <View
         style={[
           styles.map,
           {
-            width: width * TILE_SIZE,
-            height: height * TILE_SIZE,
+            width: fittedWidth,
+            height: fittedHeight,
             transform: [{ translateX: offsetX }, { translateY: offsetY }],
           },
         ]}
@@ -148,22 +229,22 @@ export function MapView() {
             glyph={cell.glyph}
             color={cell.color}
             backgroundColor={cell.backgroundColor}
+            size={tileSize}
           />
         ))}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   viewport: {
     // The VISIBLE, clipped node: `onLayout` measures this (flex: 1), never the
-    // full-size inner map. `flex-start` pins the map's origin so the translate
-    // offset is measured from the top-left.
+    // full-size inner map. The per-axis alignment is applied inline (centre when
+    // the fitted map fits, `flex-start` when it overflows so the translate
+    // offset is measured from the top-left).
     flex: 1,
     overflow: 'hidden',
-    alignItems: 'flex-start',
-    justifyContent: 'flex-start',
   },
   map: {
     flexDirection: 'row',

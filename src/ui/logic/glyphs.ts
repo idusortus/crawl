@@ -22,9 +22,11 @@
  *    crashed on.
  *  - Terrain is a documented pair: `.` for passable floor, `#` for a wall.
  *  - Visibility is a three-way treatment (visible > explored > unseen); unseen
- *    tiles reveal nothing, so their glyph is the blank string. The
- *    explored-but-not-visible rule governs stairs too: a remembered stairs tile
- *    shows flat terrain, not the stairs glyph.
+ *    tiles reveal nothing, so their glyph is the blank string. Monsters and
+ *    floor items render only when visible, but the stairs are a remembered
+ *    terrain feature: a remembered (explored, not visible) stairs tile keeps
+ *    showing {@link STAIRS_GLYPH} (dimmed) so it stays findable after it leaves
+ *    field of view (change `mobile-client-playability`, design D5; task 8.1).
  */
 
 import type { Entity, LoadedPack, Position } from '@engine';
@@ -164,10 +166,12 @@ export interface TileRenderInput {
  * over it, plus the color for its visibility state.
  *
  * Unseen tiles short-circuit: no glyph and the unseen background, revealing
- * nothing about terrain or occupants. On a seen tile an occupant's glyph (or the
- * stairs glyph) is drawn only while the tile is currently `visible`; an
- * explored-but-not-visible tile shows terrain alone (dimmed), never an occupant
- * that has since left FOV — the explored-but-not-visible rule governs stairs too.
+ * nothing about terrain or occupants. On a seen tile an occupant's glyph is
+ * drawn only while the tile is currently `visible`, so an explored-but-not-
+ * visible tile shows no monster or item that has since left FOV. The stairs are
+ * the one exception: they are a remembered terrain feature, so the stairs glyph
+ * is drawn whenever the tile is seen — visible or merely explored — dimmed in
+ * the explored-only case (change `mobile-client-playability`, design D5).
  *
  * Precedence on a visible tile is entity over stairs over terrain: a monster or
  * item standing on the stairs tile is what the player must see.
@@ -192,13 +196,15 @@ export function tileRender(input: TileRenderInput): TileRender {
     pos.y === stairs.y;
 
   let glyph = terrainGlyph(passable);
-  let isOccupant = false;
+  let isFeature = false;
   if (visible && entity !== undefined) {
     glyph = entityGlyph(pack, entity);
-    isOccupant = true;
-  } else if (visible && onStairs) {
+    isFeature = true;
+  } else if (onStairs) {
+    // Reached only when the tile is seen (the unseen case returned above), so
+    // this covers both visible stairs and remembered (explored-only) stairs.
     glyph = STAIRS_GLYPH;
-    isOccupant = true;
+    isFeature = true;
   }
 
   const dimmed = !visible;
@@ -206,7 +212,7 @@ export function tileRender(input: TileRenderInput): TileRender {
     ? visibilityStyle(false, true, palette)
     : isPlayer === true
       ? palette.player
-      : isOccupant
+      : isFeature
         ? palette.entity
         : passable
           ? palette.floor

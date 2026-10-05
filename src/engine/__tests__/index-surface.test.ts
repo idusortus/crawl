@@ -187,7 +187,12 @@ describe('public engine surface (@engine)', () => {
     const validation: PackValidationResult = validatePack(fantasyPack);
     expect(validation.ok).toBe(true);
 
-    // Effect-registry surface: the item's effect kind is registered.
+    // Effect-registry surface: the item's effect kind is registered. `effect`
+    // is optional on the item schema (ranged weapons declare none), so narrow
+    // before reading `.kind` rather than casting.
+    if (item.effect === undefined) {
+      throw new Error('healing-potion must declare an effect');
+    }
     const effect: ItemEffect = item.effect;
     const resolver: EffectResolver | undefined = effectRegistry[effect.kind];
     expect(typeof resolver).toBe('function');

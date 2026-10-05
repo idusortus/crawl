@@ -58,6 +58,7 @@ function testPack(): Record<string, unknown> {
         glyph: '&',
         effect: { kind: 'roll-heal', min: 2, max: 7 },
       },
+      { id: 'shortbow', name: 'Shortbow', glyph: ')', ranged: { range: 6, damage: 4 } },
     ],
   };
 }
@@ -284,6 +285,25 @@ describe('use-item — rejection without corruption', () => {
 
     expect(events).toEqual([noop('unknown-effect:mystery-blast')]);
     expect(state.entities).toEqual(before.entities);
+    expect(state.rng).toEqual(before.rng);
+  });
+
+  it('treats an effect-less item (a ranged weapon) as a no-op that consumes nothing', () => {
+    const pack = loadPack(testPack());
+    const before = makeState(3);
+    before.carriedItemIds = ['shortbow'];
+
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'use-item', itemId: 'shortbow' },
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(events).toEqual([noop('item-has-no-effect')]);
+    // Nothing applied, nothing consumed, and no RNG draw.
+    expect(state.entities).toEqual(before.entities);
+    expect(state.carriedItemIds).toEqual(['shortbow']);
     expect(state.rng).toEqual(before.rng);
   });
 

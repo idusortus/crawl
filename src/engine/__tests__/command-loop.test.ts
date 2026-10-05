@@ -11,10 +11,18 @@ import {
   loadPack,
   moved,
   noop,
+  RANGED_DAMAGE_KIND,
   rngFromState,
 } from '../index';
 import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from '../fov';
-import type { Command, GameEvent, GameState, LoadedPack, Position } from '../index';
+import type {
+  Command,
+  GameEvent,
+  GameState,
+  LoadedPack,
+  Position,
+  RangedAttackCommand,
+} from '../index';
 
 /**
  * Test fixture: a 3x3 grid with a wall column at x=1.
@@ -1270,5 +1278,381 @@ describe('descent does not advance the new level monsters', () => {
       const { events } = descend(seed, densePack());
       expect(events).toEqual([{ type: 'level-changed', depth: 2 }]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ranged attack command (change `mobile-client-playability`, design D3; tasks
+// 2.3/2.4/3.1)
+// ---------------------------------------------------------------------------
+
+describe('ranged attack command', () => {
+  /**
+   * A pack with a `shortbow` (range 6, damage 4), a deterministic consumable,
+   * and one `chase` monster. Mirrors the shape of the shipped fantasy pack
+   * without depending on it.
+   */
+  function rangedPack(): LoadedPack {
+    return loadPack({
+      id: 'ranged-command-test-pack',
+      name: 'Ranged Command Test Pack',
+      version: 2,
+      classes: [
+        { id: 'fighter', name: 'Fighter', glyph: '@', hp: 10, attack: 4 },
+        { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, attack: 3 },
+      ],
+      monsters: [
+        {
+          id: 'goblin',
+          name: 'Goblin',
+          glyph: 'g',
+          hp: 5,
+          behavior: 'chase',
+          attack: 2,
+        },
+      ],
+      items: [
+        {
+          id: 'shortbow',
+          name: 'Shortbow',
+          glyph: ')',
+          ranged: { range: 6, damage: 4 },
+        },
+        {
+          id: 'potion',
+          name: 'Potion',
+          glyph: '!',
+          effect: { kind: 'heal', amount: 5 },
+        },
+      ],
+    });
+  }
+
+  /**
+   * An open `size`x`size` room with the player at (1,1), carrying `shortbow` by
+   * default. The player has a copied `attack` of 4 so the ranged path's own
+   * weapon damage is what bounds the draw.
+   */
+  function openState(
+    entities: GameState['entities'],
+    carriedItemIds: string[] = ['shortbow'],
+    size = 6,
+    seed = 1234,
+  ): GameState {
+    const grid = createGrid(
+      Array.from({ length: size }, () => new Array<boolean>(size).fill(true)),
+    );
+    const rng = createRng(seed);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(0, 0), stairs: at(size - 1, size - 1) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 },
+        ...entities,
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds,
+      rng: { seed, state: rng.state() },
+      events: [],
+    };
+  }
+
+  /** Fires at `target` through the pack-aware entry point. */
+  function shoot(
+    state: GameState,
+    pack: LoadedPack,
+    target: Position,
+  ): ReturnType<typeof applyCommandWithPack> {
+    return applyCommandWithPack(
+      state,
+      { type: 'ranged-attack', target },
+      rngFromState(state.rng),
+      pack,
+    );
+  }
+
+  it('an in-range visible hit deals seeded damage, emits kind ranged, and advances monsters', () => {
+    const pack = rangedPack();
+    const state = openState([
+      {
+        id: 'goblin',
+        kind: 'goblin',
+        pos: at(4, 1),
+        hp: 5,
+        behavior: 'chase',
+        attack: 2,
+      },
+    ]);
+    // Sanity: the target is genuinely visible under the engine's own FOV.
+    const visible = computeFov(state.grid, at(1, 1), DEFAULT_SIGHT_RADIUS);
+    expect(visible[1 * state.grid.width + 4]).toBe(true);
+
+    const { state: next, events } = shoot(state, pack, at(4, 1));
+
+    const hit = events[0];
+    expect(hit?.type).toBe('attacked');
+    if (hit?.type !== 'attacked') return;
+    expect(hit.attackerId).toBe('player');
+    expect(hit.targetId).toBe('goblin');
+    expect(hit.kind).toBe(RANGED_DAMAGE_KIND);
+    expect(hit.amount).toBeGreaterThanOrEqual(1);
+    expect(hit.amount).toBeLessThanOrEqual(4);
+
+    const goblin = entityById(next.entities, 'goblin');
+    expect(goblin?.hp).toBe(5 - hit.amount);
+    // A non-lethal hit leaves the entity list unchanged: the synthetic attacker
+    // is a call argument only and must not leak into `entities`.
+    expect(next.entities).toHaveLength(state.entities.length);
+    // The player did not move onto the target.
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+    // The surviving chase monster advances after the successful hit.
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'moved' &&
+          (e as { entityId: string }).entityId === 'goblin',
+      ),
+    ).toBe(true);
+    // Firing does not consume the weapon.
+    expect(next.carriedItemIds).toEqual(['shortbow']);
+  });
+
+  it('carrying no ranged weapon no-ops without drawing or changing the world', () => {
+    const pack = rangedPack();
+    const state = openState(
+      [{ id: 'goblin', kind: 'goblin', pos: at(4, 1), hp: 5 }],
+      ['potion'],
+    );
+    const { state: next, events } = shoot(state, pack, at(4, 1));
+    expect(events).toEqual([noop('no-ranged-weapon')]);
+    expect(next.entities).toEqual(state.entities);
+    expect(next.rng).toEqual(state.rng);
+    expect(next.carriedItemIds).toEqual(['potion']);
+  });
+
+  it('carrying nothing at all no-ops with no-ranged-weapon', () => {
+    const pack = rangedPack();
+    const state = openState(
+      [{ id: 'goblin', kind: 'goblin', pos: at(4, 1), hp: 5 }],
+      [],
+    );
+    const { events } = shoot(state, pack, at(4, 1));
+    expect(events).toEqual([noop('no-ranged-weapon')]);
+  });
+
+  it('a target beyond the weapon range no-ops', () => {
+    const pack = rangedPack();
+    // shortbow range 6; (8,8) is Chebyshev 7 from (1,1).
+    const state = openState(
+      [{ id: 'goblin', kind: 'goblin', pos: at(8, 8), hp: 5 }],
+      ['shortbow'],
+      10,
+    );
+    const { state: next, events } = shoot(state, pack, at(8, 8));
+    expect(events).toEqual([noop('out-of-range')]);
+    expect(entityById(next.entities, 'goblin')?.hp).toBe(5);
+    expect(next.rng).toEqual(state.rng);
+  });
+
+  it('a target that is not currently visible no-ops', () => {
+    const pack = rangedPack();
+    // A wall column at x=3 shadows the recessed tile (4,1) from the player at
+    // (1,1): distance 3 (in range) but not visible.
+    const grid = createGrid([
+      [true, true, true, true, true, true],
+      [true, true, true, false, true, true],
+      [true, true, true, false, true, true],
+      [true, true, true, true, true, true],
+      [true, true, true, true, true, true],
+      [true, true, true, true, true, true],
+    ]);
+    const rng = createRng(1234);
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: at(1, 1), stairs: at(5, 5) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 },
+        {
+          id: 'goblin',
+          kind: 'goblin',
+          pos: at(4, 1),
+          hp: 5,
+          behavior: 'chase',
+          attack: 2,
+        },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: ['shortbow'],
+      rng: { seed: 1234, state: rng.state() },
+      events: [],
+    };
+    const visible = computeFov(grid, at(1, 1), DEFAULT_SIGHT_RADIUS);
+    expect(visible[1 * grid.width + 4]).toBe(false);
+
+    const { state: next, events } = shoot(state, pack, at(4, 1));
+    expect(events).toEqual([noop('target-not-visible')]);
+    expect(entityById(next.entities, 'goblin')?.hp).toBe(5);
+    expect(next.rng).toEqual(state.rng);
+  });
+
+  it('an empty target tile no-ops', () => {
+    const pack = rangedPack();
+    const state = openState([], ['shortbow']);
+    const { state: next, events } = shoot(state, pack, at(4, 1));
+    expect(events).toEqual([noop('nothing-to-attack')]);
+    expect(next.entities).toEqual(state.entities);
+    expect(next.rng).toEqual(state.rng);
+  });
+
+  it('a non-living occupant no-ops', () => {
+    const pack = rangedPack();
+    const state = openState(
+      [{ id: 'rock', kind: 'rock', pos: at(4, 1) }],
+      ['shortbow'],
+    );
+    const { events } = shoot(state, pack, at(4, 1));
+    expect(events).toEqual([noop('nothing-to-attack')]);
+  });
+
+  it('targeting the player own tile no-ops rather than self-attacking', () => {
+    const pack = rangedPack();
+    const state = openState([], ['shortbow']);
+    const { state: next, events } = shoot(state, pack, at(1, 1));
+    expect(events).toEqual([noop('nothing-to-attack')]);
+    expect(entityById(next.entities, 'player')?.hp).toBe(10);
+  });
+
+  it('a malformed or missing target no-ops as malformed-command', () => {
+    const pack = rangedPack();
+    const state = openState([], ['shortbow']);
+
+    const missing = applyCommandWithPack(
+      state,
+      { type: 'ranged-attack' } as unknown as Command,
+      rngFromState(state.rng),
+      pack,
+    );
+    expect(missing.events).toEqual([noop('malformed-command')]);
+
+    const nonNumeric = applyCommandWithPack(
+      state,
+      { type: 'ranged-attack', target: { x: 'a', y: 1 } } as unknown as Command,
+      rngFromState(state.rng),
+      pack,
+    );
+    expect(nonNumeric.events).toEqual([noop('malformed-command')]);
+
+    const fractional = applyCommandWithPack(
+      state,
+      { type: 'ranged-attack', target: at(1.5, 1) },
+      rngFromState(state.rng),
+      pack,
+    );
+    expect(fractional.events).toEqual([noop('malformed-command')]);
+
+    // World unchanged and no RNG drawn on any malformed path.
+    expect(missing.state.entities).toEqual(state.entities);
+    expect(missing.state.rng).toEqual(state.rng);
+  });
+
+  it('a lethal ranged hit removes the target', () => {
+    const pack = rangedPack();
+    const state = openState(
+      [
+        {
+          id: 'goblin',
+          kind: 'goblin',
+          pos: at(4, 1),
+          hp: 1,
+          behavior: 'chase',
+          attack: 2,
+        },
+      ],
+      ['shortbow'],
+    );
+    const { state: next, events } = shoot(state, pack, at(4, 1));
+    expect(events[0]?.type).toBe('attacked');
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'death' &&
+          (e as { entityId: string }).entityId === 'goblin',
+      ),
+    ).toBe(true);
+    expect(entityById(next.entities, 'goblin')).toBeUndefined();
+    expect(entityAt(next.entities, at(4, 1))).toBeUndefined();
+    // The player did not move onto or swap positions with the target.
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+  });
+
+  it('is deterministic: the same seed + command produces identical state and events', () => {
+    const pack = rangedPack();
+    const run = () => {
+      const state = openState([
+        {
+          id: 'goblin',
+          kind: 'goblin',
+          pos: at(4, 1),
+          hp: 5,
+          behavior: 'chase',
+          attack: 2,
+        },
+      ]);
+      return shoot(state, pack, at(4, 1));
+    };
+    const a = run();
+    const b = run();
+    expect(b.events).toEqual(a.events);
+    expect(b.state).toEqual(a.state);
+  });
+
+  it('the command, events, and resulting state round-trip through JSON', () => {
+    const pack = rangedPack();
+    const state = openState([
+      {
+        id: 'goblin',
+        kind: 'goblin',
+        pos: at(4, 1),
+        hp: 5,
+        behavior: 'chase',
+        attack: 2,
+      },
+    ]);
+    const command: RangedAttackCommand = {
+      type: 'ranged-attack',
+      target: at(4, 1),
+    };
+    const result = applyCommandWithPack(
+      state,
+      command,
+      rngFromState(state.rng),
+      pack,
+    );
+
+    const roundTripped = JSON.parse(
+      JSON.stringify({
+        command,
+        events: result.events,
+        state: result.state,
+      }),
+    ) as { command: Command; events: GameEvent[]; state: GameState };
+
+    expect(roundTripped.command).toEqual(command);
+    expect(roundTripped.events).toEqual(result.events);
+    expect(roundTripped.state).toEqual(result.state);
+  });
+
+  it('the content-free entry point rejects ranged-attack as unknown', () => {
+    const state = openState([], ['shortbow']);
+    const { events } = applyCommand(
+      state,
+      { type: 'ranged-attack', target: at(4, 1) },
+      rngFromState(state.rng),
+    );
+    expect(events).toEqual([noop('unknown-command:ranged-attack')]);
   });
 });

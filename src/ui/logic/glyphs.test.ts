@@ -236,7 +236,7 @@ describe('tileRender — stairs (change core-gameplay-loop, task 9.1)', () => {
     expect(elsewhere.glyph).toBe(FLOOR_GLYPH);
   });
 
-  it('shows flat terrain on an explored-but-not-visible stairs tile', () => {
+  it('keeps remembering the stairs glyph on an explored-but-not-visible stairs tile', () => {
     const remembered = tileRender({
       ...base,
       visible: false,
@@ -245,9 +245,30 @@ describe('tileRender — stairs (change core-gameplay-loop, task 9.1)', () => {
       stairs: STAIRS,
     });
 
-    // The explored-but-not-visible rule governs stairs too.
-    expect(remembered.glyph).toBe(FLOOR_GLYPH);
-    expect(remembered.glyph).not.toBe(STAIRS_GLYPH);
+    // Stairs are a remembered terrain feature, so they stay drawn (dimmed) after
+    // leaving FOV rather than reverting to flat terrain (design D5).
+    expect(remembered.glyph).toBe(STAIRS_GLYPH);
+    expect(remembered.glyph).not.toBe(FLOOR_GLYPH);
+  });
+
+  it('dims remembered stairs relative to visible stairs', () => {
+    const visibleStairs = tileRender({
+      ...base,
+      visible: true,
+      explored: true,
+      pos: STAIRS,
+      stairs: STAIRS,
+    });
+    const remembered = tileRender({
+      ...base,
+      visible: false,
+      explored: true,
+      pos: STAIRS,
+      stairs: STAIRS,
+    });
+
+    expect(remembered.color).toBe(visibilityStyle(false, true));
+    expect(remembered.color).not.toBe(visibleStairs.color);
   });
 
   it('reveals nothing on an unseen stairs tile', () => {

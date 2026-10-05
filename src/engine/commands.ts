@@ -16,12 +16,18 @@ import {
   attackTargetAt,
   entityById,
   entityAt,
+  indexOf,
   isFeature,
   isPassable,
   isStairs,
 } from './grid';
 import { advanceMonsters } from './ai';
-import { entityHp, MELEE_DAMAGE_KIND, resolveDamage } from './combat';
+import {
+  entityHp,
+  MELEE_DAMAGE_KIND,
+  RANGED_DAMAGE_KIND,
+  resolveDamage,
+} from './combat';
 import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from './fov';
 import { generateLevel, populateLevel } from './level';
 import {
@@ -38,7 +44,7 @@ import {
 } from './events';
 import { resolveEffect } from './effects';
 import type { LoadedPack } from './pack';
-import type { PackItem } from './schema/pack';
+import type { PackItem, RangedDescriptor } from './schema/pack';
 import type { Rng } from './rng';
 import type {
   Command,
@@ -142,6 +148,24 @@ function isValidDirection(value: unknown): value is Direction {
   );
 }
 
+/**
+ * Narrows an unknown value to an integer tile `Position`.
+ *
+ * `ranged-attack` arrives from serialized logs, so a missing or non-numeric
+ * target must degrade to `noop('malformed-command')` rather than reaching
+ * `target.x` and producing `NaN` index arithmetic. Coordinates must be finite
+ * integers because `Position` is defined as an integer tile coordinate, so a
+ * fractional or non-finite target is rejected as malformed.
+ */
+function isValidPosition(value: unknown): value is Position {
+  if (value === null || typeof value !== 'object') return false;
+  const pos = value as { x?: unknown; y?: unknown };
+  return (
+    Number.isInteger(pos.x) &&
+    Number.isInteger(pos.y)
+  );
+}
+
 /** Unit step for each direction. North is `-y`, matching screen-style rows. */
 function step(direction: Direction): Position {
   switch (direction) {
@@ -174,35 +198,35 @@ function withEntityAt(
 }
 
 /**
- * Resolves a single attack by `attacker` against the living entity in
- * `direction`, applying the shared combat rules for **both** the explicit
- * `attack` command and bump-to-attack (design D2; task 5.2).
+ * Resolves a single attack by `attacker` against the living entity `target`
+ * using the damage `damageKind`, applying the shared combat rules for the
+ * explicit `attack` command, bump-to-attack, and ranged attacks (design D2;
+ * change `mobile-client-playability` D3).
  *
- * The caller has already established that the target tile holds a living
- * occupant; this helper performs the resolution itself:
+ * The caller has already established that `target` is a valid living occupant;
+ * this helper performs the resolution itself:
  *
- *  - `resolveDamage(MELEE_DAMAGE_KIND, attacker, target, rng)` draws the seeded
- *    damage. An unregistered kind is a defensive miss → a `noop` (never a throw).
+ *  - `resolveDamage(damageKind, attacker, target, rng)` draws the seeded damage
+ *    and stamps the kind onto the resolved hit. An unregistered kind is a
+ *    defensive miss → a `noop` (never a throw).
  *  - `attacked` is always emitted with the attacker, target, amount, and kind.
  *  - when the target's HP reaches ≤ 0 it is **removed** from `entities` and a
  *    `death` event is emitted; if the target is the player, the state's `status`
  *    flips to `'dead'` and a `player-died` event is emitted (permadeath).
  *
  * The attacker is never moved, and the input state is never mutated: `entities`
- * is a fresh array and the target update is a shallow copy.
+ * is a fresh array and the target update is a shallow copy. `attacker` need not
+ * be an entity in `state.entities` — the ranged path passes a synthetic copy —
+ * because only `attacker.id` and the resolved damage are read.
  */
 function resolveAttack(
   state: GameState,
   attacker: Entity,
   target: Entity,
   rng: Rng,
+  damageKind: string,
 ): CommandResult {
-  const resolution = resolveDamage(
-    MELEE_DAMAGE_KIND,
-    attacker,
-    target,
-    rng,
-  );
+  const resolution = resolveDamage(damageKind, attacker, target, rng);
   if (resolution === undefined) {
     return commit(state, rng, [noop('unknown-damage-kind')]);
   }
@@ -282,7 +306,7 @@ function applyMove(
   // Living occupant: attack instead of moving (bump-to-attack).
   const attackTarget = attackTargetAt(state.entities, target);
   if (attackTarget !== undefined) {
-    return resolveAttack(state, entity, attackTarget, rng);
+    return resolveAttack(state, entity, attackTarget, rng, MELEE_DAMAGE_KIND);
   }
 
   // Feature tile (floor item or the stairs position): enter it. The occupant
@@ -349,7 +373,105 @@ function applyAttack(
     return commit(state, rng, [noop('nothing-to-attack')]);
   }
 
-  return resolveAttack(state, entity, targetEntity, rng);
+  return resolveAttack(state, entity, targetEntity, rng, MELEE_DAMAGE_KIND);
+}
+
+/**
+ * Returns the ranged descriptor of the first carried item that declares one, in
+ * `carriedItemIds` order, or `undefined` when the player carries no ranged
+ * weapon (change `mobile-client-playability`, design D3).
+ *
+ * There is no equipment system, so "equipped" means "currently carried": the
+ * deterministic first match wins because the list is ordered plain data. An id
+ * that does not resolve in the loaded pack is skipped rather than throwing, so a
+ * malformed save cannot crash a command. Only the descriptor is returned — no
+ * item entry is ever stored in state (content-as-data).
+ */
+function equippedRangedWeapon(
+  state: GameState,
+  pack: LoadedPack,
+): RangedDescriptor | undefined {
+  for (const id of state.carriedItemIds) {
+    let item: PackItem;
+    try {
+      item = pack.item(id);
+    } catch {
+      continue;
+    }
+    if (item.ranged !== undefined) return item.ranged;
+  }
+  return undefined;
+}
+
+/**
+ * Resolves a `ranged-attack` command against an explicit target tile (change
+ * `mobile-client-playability`, design D3; engine/combat spec "Ranged attack
+ * resolved against an explicit target").
+ *
+ * The target is resolved against the loaded pack: the weapon is the first
+ * carried id whose entry declares a `ranged` descriptor (see
+ * `equippedRangedWeapon`). Each failure mode degrades to a single `noop` that
+ * draws no randomness and leaves the world byte-for-byte unchanged:
+ *
+ *  - no player entity              -> `noop('no-player-entity')`
+ *  - no carried ranged weapon      -> `noop('no-ranged-weapon')`
+ *  - no living target / own tile   -> `noop('nothing-to-attack')`
+ *  - Chebyshev distance > range    -> `noop('out-of-range')`
+ *  - target not currently visible  -> `noop('target-not-visible')`
+ *
+ * On success the shot resolves through the shared `resolveAttack` with a
+ * **synthetic attacker** (`{ ...actor, attack: weapon.damage }`) so the seeded
+ * `randInt(1, damage)` draw, the `attacked` event (kind `ranged`), death
+ * removal, and permadeath wiring are all reused. The synthetic object exists
+ * only as a call argument and is never stored in `entities`; the weapon is not
+ * consumed (no ammunition is tracked). Visibility uses the same `computeFov`
+ * metric as the rest of the engine, so wall-blocking and range agree.
+ */
+function applyRangedAttack(
+  state: GameState,
+  target: Position,
+  rng: Rng,
+  pack: LoadedPack,
+): CommandResult {
+  const actor = entityById(state.entities, state.playerId);
+  if (actor === undefined) {
+    return commit(state, rng, [noop('no-player-entity')]);
+  }
+
+  const weapon = equippedRangedWeapon(state, pack);
+  if (weapon === undefined) {
+    return commit(state, rng, [noop('no-ranged-weapon')]);
+  }
+
+  const targetEntity = attackTargetAt(state.entities, target);
+  // Only a *different* living entity is a valid target: an empty tile, a
+  // non-living occupant, or the actor's own tile all degrade here.
+  if (targetEntity === undefined || targetEntity.id === actor.id) {
+    return commit(state, rng, [noop('nothing-to-attack')]);
+  }
+
+  // Chebyshev distance, the same metric `computeFov` measures range with.
+  const distance = Math.max(
+    Math.abs(target.x - actor.pos.x),
+    Math.abs(target.y - actor.pos.y),
+  );
+  if (distance > weapon.range) {
+    return commit(state, rng, [noop('out-of-range')]);
+  }
+
+  const visible = computeFov(state.grid, actor.pos, DEFAULT_SIGHT_RADIUS);
+  if (visible[indexOf(state.grid, target)] !== true) {
+    return commit(state, rng, [noop('target-not-visible')]);
+  }
+
+  const syntheticAttacker: Entity = { ...actor, attack: weapon.damage };
+  return resolveAttack(
+    state,
+    syntheticAttacker,
+    targetEntity,
+    rng,
+    RANGED_DAMAGE_KIND,
+  );
 }
 
 /**
@@ -404,6 +526,7 @@ function applyPickup(state: GameState, rng: Rng): CommandResult {
  *
  *  - no player entity  -> `noop('no-player-entity')`
  *  - unknown item id   -> `noop('unknown-item:<id>')`
+ *  - no effect (weapon)-> `noop('item-has-no-effect')`
  *  - unknown effect    -> `noop('unknown-effect:<kind>')`
  *
  * On success the effect is resolved by the registry, applied to a **copy** of
@@ -439,6 +562,12 @@ function applyUseItem(
     // `LoadedPack.item` reports an unknown id by throwing `UnknownContentIdError`
     // (design D5). At the command boundary that is a noop, not a crash.
     return commit(state, rng, [noop(`unknown-item:${itemId}`)]);
+  }
+
+  if (item.effect === undefined) {
+    // A weapon (ranged-only item) is fired through `ranged-attack`, never used;
+    // using it is a no-op that applies nothing and consumes nothing.
+    return commit(state, rng, [noop('item-has-no-effect')]);
   }
 
   const resolution = resolveEffect(item.effect.kind, actor, item.effect, rng);
@@ -881,6 +1010,19 @@ export function applyCommandWithPack(
       }
       return advanceTurn(state, rng, () =>
         applyAttack(state, command.direction, rng),
+      );
+    case 'ranged-attack':
+      // The target must be a well-formed integer Position; a missing or
+      // non-numeric target degrades to a malformed-command noop without
+      // reaching the pack lookup (engine/command-loop spec "Ranged attack
+      // command").
+      if (!isValidPosition(command.target)) {
+        return advanceTurn(state, rng, () =>
+          commit(state, rng, [noop('malformed-command')]),
+        );
+      }
+      return advanceTurn(state, rng, () =>
+        applyRangedAttack(state, command.target, rng, pack),
       );
     case 'descend':
       // Pack-aware: the new level is populated from the loaded pack (design D6,

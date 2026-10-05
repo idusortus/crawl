@@ -20,6 +20,13 @@
  * not assumed: for `(seed 1, 40×30, depth 1)` the design's list
  * (`skeleton@(31,15)`, `goblin@(3,22)`, `giant-rat@(36,6)`,
  * `healing-potion@(26,17)`) matched exactly (task 3.2).
+ *
+ * Change `mobile-client-playability` (task 3.3) added the `shortbow` ranged item
+ * to the fantasy pack, widening the seeded item-kind draws, so the item `kind`s
+ * in `PLACEMENT_GOLDEN` for two tuples were regenerated. This is an intentional
+ * content-driven contract change: positions and monster placements are
+ * unchanged, only the resolved item ids shifted (the item *count* and every draw
+ * order are identical). `e2e-seeded.test.ts` uses inline packs and is unaffected.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -104,8 +111,8 @@ const PLACEMENT_GOLDEN: Record<string, PlacementGolden> = {
       { kind: 'skeleton', pos: { x: 8, y: 20 } },
     ],
     items: [
-      { kind: 'wild-herb', pos: { x: 37, y: 14 } },
-      { kind: 'elixir', pos: { x: 8, y: 12 } },
+      { kind: 'sacred-relic', pos: { x: 37, y: 14 } },
+      { kind: 'wild-herb', pos: { x: 8, y: 12 } },
     ],
   },
   '3:24x18:d1': {
@@ -117,7 +124,7 @@ const PLACEMENT_GOLDEN: Record<string, PlacementGolden> = {
     ],
     items: [
       { kind: 'elixir', pos: { x: 3, y: 13 } },
-      { kind: 'sacred-relic', pos: { x: 18, y: 15 } },
+      { kind: 'shortbow', pos: { x: 18, y: 15 } },
     ],
   },
 };

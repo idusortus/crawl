@@ -424,6 +424,29 @@ describe('replayCommands — pack-free content-dependent remainder fails loudly'
     ]);
   });
 
+  it('throws PackRequiredForReplayError naming "ranged-attack" (no pack)', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    // The remainder (from appliedCount = 1) contains only `ranged-attack`, the
+    // newly content-dependent command (change `mobile-client-playability`).
+    const log: Command[] = [
+      { type: 'move', direction: 'east' },
+      { type: 'ranged-attack', target: { x: 3, y: 3 } },
+    ];
+    const midRun = replay(initial, log.slice(0, 1), pack);
+
+    let caught: unknown;
+    try {
+      replayCommands(midRun, log, 1); // no pack
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PackRequiredForReplayError);
+    const err = caught as PackRequiredForReplayError;
+    expect(err.commandTypes).toEqual(['ranged-attack']);
+    expect(err.message).toContain('ranged-attack');
+  });
+
   it('names both offending types deduplicated in first-seen order', () => {
     const pack = testPack();
     const initial = makeState(pack);

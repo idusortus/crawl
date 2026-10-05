@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { axisOffset } from './camera';
+import { appliedAxisOffset, axisOffset } from './camera';
 
 // A 40x30 map at the shipped `TILE_SIZE = 14` (design D1): 560x420 dp.
 const TILE_SIZE = 14;
@@ -53,6 +53,19 @@ describe('axisOffset', () => {
     expect(axisOffset(360, 360, 25, TILE_SIZE)).toBe(0);
   });
 
+  it('returns exactly 0 for the fitted map width (fit-to-width, task 4.4)', () => {
+    // `MapView` derives tileSize = floor(viewport / grid.width); the fitted map
+    // width is then `<=` the viewport, so the horizontal axis is centred by the
+    // layout and the camera offset must be 0 at every player column.
+    const gridWidth = 40;
+    const tileSize = Math.max(1, Math.floor(VIEWPORT_X / gridWidth)); // 9
+    const fittedWidth = gridWidth * tileSize; // 360
+    expect(fittedWidth).toBeLessThanOrEqual(VIEWPORT_X);
+    for (let x = 0; x < gridWidth; x += 1) {
+      expect(axisOffset(fittedWidth, VIEWPORT_X, x, tileSize)).toBe(0);
+    }
+  });
+
   it('returns 0 when the viewport is unmeasured (safe first render)', () => {
     expect(axisOffset(MAP_X, 0, 20, TILE_SIZE)).toBe(0);
     expect(axisOffset(MAP_Y, 0, 20, TILE_SIZE)).toBe(0);
@@ -75,5 +88,26 @@ describe('axisOffset', () => {
       expect(tileLeft).toBeGreaterThanOrEqual(0);
       expect(tileLeft + TILE_SIZE).toBeLessThanOrEqual(VIEWPORT_X);
     }
+  });
+});
+
+describe('appliedAxisOffset', () => {
+  it('uses the centring margin when the fitted map fits the axis', () => {
+    // Fitted 360 dp in a 412 dp viewport → margin (412 - 360) / 2 = 26; the
+    // camera translation is 0 (the axis fits), and the layout margin is what a
+    // touch must subtract.
+    const tileSize = 9;
+    const fittedWidth = 40 * tileSize; // 360
+    const cameraOffset = axisOffset(fittedWidth, 412, 20, tileSize); // 0
+    expect(cameraOffset).toBe(0);
+    expect(appliedAxisOffset(fittedWidth, 412, cameraOffset)).toBe(26);
+  });
+
+  it('uses the camera translation when the fitted map overflows the axis', () => {
+    // Overflowing vertical axis: the map is pinned to flex-start, so the applied
+    // offset is exactly the camera translation.
+    const cameraOffset = axisOffset(MAP_Y, 200, 20, TILE_SIZE);
+    expect(cameraOffset).toBeLessThan(0);
+    expect(appliedAxisOffset(MAP_Y, 200, cameraOffset)).toBe(cameraOffset);
   });
 });

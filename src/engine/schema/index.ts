@@ -31,4 +31,5 @@ export type {
   PackItem,
   PackMonster,
   PackValidationResult,
+  RangedDescriptor,
 } from './pack';

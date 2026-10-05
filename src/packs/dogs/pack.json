@@ -61,6 +61,12 @@
       "name": "Treat",
       "glyph": "t",
       "effect": { "kind": "roll-heal", "min": 3, "max": 8 }
+    },
+    {
+      "id": "frisbee",
+      "name": "Frisbee",
+      "glyph": ")",
+      "ranged": { "range": 5, "damage": 3 }
     }
   ]
 }

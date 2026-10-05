@@ -76,6 +76,12 @@
       "name": "Sacred Relic",
       "glyph": "$",
       "effect": { "kind": "heal", "amount": 20 }
+    },
+    {
+      "id": "shortbow",
+      "name": "Shortbow",
+      "glyph": ")",
+      "ranged": { "range": 6, "damage": 4 }
     }
   ]
 }

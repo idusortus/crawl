@@ -28,7 +28,7 @@
 
 ## 2026-10-04 — Stage 6 (`core-gameplay-loop`) outcome
 
-**Context:** Stage 6 turned the headless engine into a complete deterministic roguelike loop and needed its load-bearing choices recorded before Stage 7 (`second-theme-pack`) tests the content seam. All were settled across Phases 1–9 (design D1–D10) and are implemented, verified, and reviewed (pre-apply review NEEDS REVISION → findings fixed; final suite 396 tests).
+**Context:** Stage 6 turned the headless engine into a complete deterministic roguelike loop and needed its load-bearing choices recorded before Stage 7 (`second-theme-pack`) tests the content seam. All were settled across Phases 1–9 (design D1–D10) and are implemented, verified, and reviewed (pre-apply review NEEDS REVISION → findings fixed; final suite 398 tests).
 
 **Choice:**
 - **Pack v2 seam — content stays declarative data.** `packMonsterSchema` gains `behavior: string` + `attack: number` (positive), `packClassSchema` gains `attack: number`; `PACK_VERSION` bumps 1 → 2 (a `version: 1` pack is rejected naming the version). The **schema** (not just the loader) requires the fields, so every v1 fixture was upgraded. No functions/scripts/logic in the pack: the engine resolves `behavior` through `behaviorRegistry` and `attack` through the damage path; the pack supplies only a string id and a number. This is the deliberate seam event.

@@ -9,7 +9,7 @@ A framework-free, deterministic TypeScript roguelike **engine** (`src/engine`) w
 npm install
 
 # 2. Verify the toolchain (no device required)
-npm test          # Vitest engine + pack + pure-UI tests (396)
+npm test          # Vitest engine + pack + pure-UI tests (398)
 npm run typecheck # tsc --noEmit
 npm run lint      # ESLint, incl. the src/engine purity boundary
 

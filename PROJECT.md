@@ -56,7 +56,7 @@ npm start         # expo start
 1. **`bootstrap-engine-skeleton`** — pure-TS grid, entities, seeded RNG, `applyCommand → events`, event log, Vitest. *(complete)*
 2. **`content-packs-v1`** — pack loader + zod schema; tiny fantasy pack; `use-item` command/event drawing from the injected RNG. *(complete)*
 3. **`levelgen-and-fov`** — seeded BSP level generation + named-generator registry, recursive-shadowcasting FOV, stored explored mask, deterministic `descend`. *(complete)*
-4. **APK pipeline** — build/CI change to produce an installable Android APK. *(complete — workflow authored and locally verified; the first live `v*` tag run is the authoritative on-device check)*
+4. **APK pipeline** — build/CI change to produce an installable Android APK. *(complete — the workflow is proven live: `v0.1.0` and `v0.2.0` each built, verified, and attached a signed `crawl-<tag>.apk` to a GitHub Release)*
 5. **`expo-glyph-renderer`** — Expo Router shell + glyph renderer + input mapping. *(complete)*
 6. **`core-gameplay-loop`** — AI, combat, items, stairs, permadeath, save/load. *(complete — seeded monster/item population, named behavior + damage registries, bump-to-attack + permadeath, pickup/use-item, stairs-gated populated descent, and a JSON-state + command-log save/load surface resumed by replaying the remainder; the UI dispatches the new commands through a game-over surface and saves/resumes via the engine save path)*
 7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test). *(next)*

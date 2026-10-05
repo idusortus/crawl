@@ -13,6 +13,12 @@
  *
  * The carried-item buttons are derived from `state.carriedItemIds`, so the list
  * reflects live state and a use always names an id the player actually carries.
+ *
+ * Save feedback (change `ui-fit-and-persistence`, design D3): a successful save
+ * flips the hook's presentation-only `savedIndicator`, and a storage/hydration
+ * failure lands in the separate non-fatal `saveError` channel. Both are shown as
+ * an inline note — the indicator is transient and cleared by the next action,
+ * and the error note never hides the game (unlike the fatal pack-load `error`).
  */
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -31,7 +37,8 @@ interface ActionButton {
 }
 
 export function ActionBar() {
-  const { dispatch, save, resume, hasSave, state } = useGameContext();
+  const { dispatch, save, resume, hasSave, state, savedIndicator, saveError } =
+    useGameContext();
 
   const carried = state?.carriedItemIds ?? [];
 
@@ -98,6 +105,13 @@ export function ActionBar() {
           ))
         )}
       </View>
+      {saveError !== undefined ? (
+        <Text style={styles.saveError}>
+          Save failed: {saveError.message}
+        </Text>
+      ) : savedIndicator ? (
+        <Text style={styles.saved}>Saved</Text>
+      ) : null}
     </View>
   );
 }
@@ -131,5 +145,17 @@ const styles = StyleSheet.create({
   empty: {
     color: colors.explored,
     fontSize: 14,
+  },
+  saved: {
+    color: colors.player,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingTop: 2,
+  },
+  saveError: {
+    color: colors.entity,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingTop: 2,
   },
 });

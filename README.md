@@ -9,7 +9,7 @@ A framework-free, deterministic TypeScript roguelike **engine** (`src/engine`) w
 npm install
 
 # 2. Verify the toolchain (no device required)
-npm test          # Vitest engine + pack + pure-UI tests (409)
+npm test          # Vitest engine + pack + pure-UI tests (439)
 npm run typecheck # tsc --noEmit
 npm run lint      # ESLint, incl. the src/engine purity boundary
 
@@ -21,7 +21,7 @@ Node ≥ 22.13 is required (Node 24.x tested).
 
 ## Usage
 
-The app boots into a playable screen (`npm start` / a device or simulator): a 40×30 glyph map with a HUD showing depth and player HP, where currently-visible, remembered-but-unseen (dimmed), and never-seen (blank) tiles are visually distinct. The starting level is populated — a seeded monster/item set and an RNG-drawn stairs tile (drawn distinctly as `>`) — from the same injected RNG that generated the terrain. Input is an on-screen D-pad (N/S/E/W → `move`) plus directional attack buttons (`attack`), and an action bar with Pick up / Descend / Save / Resume plus one Use button per carried item; arrow keys are move, Shift+arrow is attack, `p`/`g` pickup, Enter / `>` descend, and `s`/`r`/`n` save/resume/new-run (all web-only dev conveniences). When the player dies the screen swaps to a **game-over surface** with a "New run" affordance rather than a frozen map. Every input path dispatches a command (or a save/resume/new-run action) through the client reducer and never mutates state; the client auto-saves on turn boundaries through `serializeSave` and resumes through `resumeRun`. Consume the engine **only** through the public surface at `@engine` (i.e. `src/engine/index.ts`); nothing outside `src/engine` should import deeper modules.
+The app boots into a playable screen (`npm start` / a device or simulator): a 40×30 glyph map with a HUD showing depth and player HP, where currently-visible, remembered-but-unseen (dimmed), and never-seen (blank) tiles are visually distinct. The full map is drawn at a fixed tile size inside a **camera viewport** that follows the player: the map is translated (never scaled) so the player's tile stays visible on a phone-sized screen, clamped at the map edges so it is never pulled past its own edge and never offset when the map fits the viewport. The camera is a deterministic function of the player position and the measured viewport — no animation — computed by the pure `src/ui/logic/camera.ts` helper and never stored in `GameState`. The starting level is populated — a seeded monster/item set and an RNG-drawn stairs tile (drawn distinctly as `>`) — from the same injected RNG that generated the terrain. Input is an on-screen D-pad (N/S/E/W → `move`) plus directional attack buttons (`attack`), and an action bar with Pick up / Descend / Save / Resume plus one Use button per carried item; arrow keys are move, Shift+arrow is attack, `p`/`g` pickup, Enter / `>` descend, and `s`/`r`/`n` save/resume/new-run (all web-only dev conveniences). When the player dies the screen swaps to a **game-over surface** with a "New run" affordance rather than a frozen map. Every input path dispatches a command (or a save/resume/new-run action) through the client reducer and never mutates state; the client auto-saves on turn boundaries through `serializeSave` and resumes through `resumeRun`. Consume the engine **only** through the public surface at `@engine` (i.e. `src/engine/index.ts`); nothing outside `src/engine` should import deeper modules.
 
 ```ts
 import { applyCommand, createGrid, createRng, rngFromState } from '@engine';

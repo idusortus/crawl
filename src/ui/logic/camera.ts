@@ -1,0 +1,71 @@
+/**
+ * Pure camera-offset math for the map viewport (change `ui-fit-and-persistence`,
+ * design D1/D5; task 1.1).
+ *
+ * Framework-free on purpose — no React, no React Native — so the offset can be
+ * unit-tested under the node Vitest environment (the `src/ui` glob), exactly like
+ * `glyphs.ts`/`input.ts`/`save.ts`. The renderer (`MapView`) owns measuring the
+ * viewport; this module owns only the deterministic translation it applies.
+ *
+ * The camera is a pure function of the player position and the measured viewport:
+ * the offset is the same for a given `(map, viewport, player)` and never animates.
+ */
+
+/**
+ * The canonical clamp range for one axis, **stated once** (design D1).
+ *
+ * The lower bound is `min(0, viewportAxis - mapAxis)` and the upper bound is `0`.
+ * For a map larger than the viewport this is `[viewportAxis - mapAxis, 0]`
+ * (e.g. 560 dp map in a 360 dp viewport → `[-200, 0]`), the exact negative
+ * translation available before the map's right edge is pulled past the viewport.
+ * When the map fits (`mapAxis <= viewportAxis`) the lower bound collapses to `0`
+ * and the range is `[0, 0]`, so a map smaller than the viewport is never offset.
+ *
+ * NOTE on design D1 wording: the design text states this range as
+ * `min(0, mapAxis - viewportAxis)`, which for `mapAxis > viewportAxis` evaluates
+ * to `+200` and would make the range `[0, 0]` — i.e. the camera would never
+ * translate and a player past the first viewport-width would walk off-screen,
+ * contradicting the requirement "the player's tile remains within the viewport"
+ * (spec `ui/glyph-renderer`). The mathematically consistent expression that
+ * satisfies every property D1 lists is the operand-swapped `min(0, viewportAxis -
+ * mapAxis)` used here. See `decisions.md` for the recorded correction.
+ */
+function clampRange(mapAxis: number, viewportAxis: number): [number, number] {
+  return [Math.min(0, viewportAxis - mapAxis), 0];
+}
+
+/**
+ * Computes the camera offset in dp for a single axis.
+ *
+ * The offset centres the player's tile within the viewport using the tile's
+ * top-left origin (`playerAxisTiles * tileSize`), then clamps it to
+ * {@link clampRange}. Both the map and viewport axes are dp and `tileSize` is dp,
+ * so the result is an exact integer and the map stays tile-aligned (no sub-pixel
+ * seams between translated tiles on Android).
+ *
+ * @param mapAxis - The full map size on this axis in dp (`grid.width * TILE_SIZE`).
+ * @param viewportAxis - The measured visible viewport size on this axis in dp.
+ *   `0` (or non-finite) before `onLayout` has fired; the result is then `0`, so
+ *   the safe first render shows the map's top-left.
+ * @param playerAxisTiles - The player's tile coordinate on this axis (`player.pos.x`/`.y`).
+ * @param tileSize - The tile side length in dp (`TILE_SIZE`).
+ * @returns A clamped, tile-aligned integer offset in dp, in the range
+ *   `[min(0, viewportAxis - mapAxis), 0]` (exactly `0` when the axis is
+ *   unmeasured or the map fits).
+ */
+export function axisOffset(
+  mapAxis: number,
+  viewportAxis: number,
+  playerAxisTiles: number,
+  tileSize: number,
+): number {
+  // Unmeasured (or otherwise unusable) viewport: no camera yet, no error. The
+  // map renders at its top-left and adopts the correct offset once measured.
+  if (!Number.isFinite(viewportAxis) || viewportAxis <= 0) {
+    return 0;
+  }
+
+  const centred = viewportAxis / 2 - playerAxisTiles * tileSize;
+  const [min, max] = clampRange(mapAxis, viewportAxis);
+  return Math.round(Math.min(Math.max(centred, min), max));
+}

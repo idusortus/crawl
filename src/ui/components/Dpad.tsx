@@ -10,7 +10,11 @@
  * dispatcher, so every input flows through the single command path in `useGame`
  * (design D3/D4/D10).
  *
- * Each button carries an `accessibilityLabel` and `accessibilityRole`, since the
+ * Each group has a visible caption (`"Move"` / `"Attack"`) and the attack group
+ * carries a distinct filled-background treatment in addition to its
+ * `colors.entity` border, so the two rows are distinguishable at a glance
+ * without a screen reader (design D2 of `ui-fit-and-persistence`). Each button
+ * also carries an `accessibilityLabel` and `accessibilityRole`, since the
  * directional glyphs alone are not self-describing to a screen reader.
  */
 
@@ -34,6 +38,7 @@ export function Dpad() {
 
   return (
     <View style={styles.pad}>
+      <Text style={styles.caption}>Move</Text>
       <View style={styles.row}>
         {DIRECTIONS.map(({ direction, label, glyph }) => (
           <Pressable
@@ -50,6 +55,7 @@ export function Dpad() {
           </Pressable>
         ))}
       </View>
+      <Text style={[styles.caption, styles.attackCaption]}>Attack</Text>
       <View style={styles.row}>
         {DIRECTIONS.map(({ direction, label, glyph }) => (
           <Pressable
@@ -59,10 +65,10 @@ export function Dpad() {
             onPress={() => dispatch({ type: 'attack', direction })}
             style={({ pressed }) => [
               styles.attackButton,
-              pressed === true && styles.pressed,
+              pressed === true && styles.attackPressed,
             ]}
           >
-            <Text style={styles.glyph}>{glyph}</Text>
+            <Text style={[styles.glyph, styles.attackGlyph]}>{glyph}</Text>
           </Pressable>
         ))}
       </View>
@@ -73,6 +79,17 @@ export function Dpad() {
 const styles = StyleSheet.create({
   pad: {
     paddingVertical: 4,
+  },
+  caption: {
+    color: colors.explored,
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  attackCaption: {
+    color: colors.entity,
   },
   row: {
     flexDirection: 'row',
@@ -96,15 +113,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 8,
-    backgroundColor: colors.background,
+    backgroundColor: colors.entity,
     borderWidth: 1,
     borderColor: colors.entity,
   },
   pressed: {
     backgroundColor: colors.floor,
   },
+  attackPressed: {
+    backgroundColor: colors.player,
+  },
   glyph: {
     color: colors.visible,
     fontSize: 22,
+  },
+  attackGlyph: {
+    color: colors.background,
+    fontWeight: '700',
   },
 });

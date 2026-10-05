@@ -73,9 +73,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.unseen,
   },
   mapArea: {
+    // No centering: `MapView`'s viewport must fill this slot so `onLayout`
+    // measures the screen, not the 560 dp map (change `ui-fit-and-persistence`,
+    // design D1). Centering here would make the measured width the map's and the
+    // camera could never follow the player.
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   inputSlot: {
     minHeight: 0,

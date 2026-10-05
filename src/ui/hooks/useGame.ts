@@ -1,6 +1,7 @@
 /**
  * `useGame` — the client-side game hook (change `expo-glyph-renderer`, design
- * D4/D7; tasks 2.3/2.4; extended by `core-gameplay-loop` task 9.3 / design D10).
+ * D4/D7; tasks 2.3/2.4; extended by `core-gameplay-loop` task 9.3 / design D10;
+ * extended by `ui-fit-and-persistence` design D3/D4).
  *
  * Owns the `{ state, pack }` pair, the immutable command-dispatch contract, and
  * the client-side save/resume flow. This is the ONLY place in `src/ui` that
@@ -21,13 +22,23 @@
  * `Rng` from `state.rng` via `rngFromState`, so state is the single source of
  * truth and a replayed command log is reproducible.
  *
- * Save/resume (design D8/D10): the engine owns serialization (`serializeSave`),
- * replay (`resumeRun`), and the command log/cursor contract; this hook owns the
- * client-side storage and the run lifecycle around it. The save string is held
- * in a `useState` slot — an in-memory store is deliberately sufficient for this
- * stage (no external storage dependency). Auto-save runs on turn boundaries,
- * after a state change, and never mutates the live state. All engine calls go
- * through `@engine`; the UI never implements engine behavior.
+ * Persistence (design D3/D4): the engine owns serialization (`serializeSave`),
+ * replay (`resumeRun`), and the command log/cursor contract; `save.ts` remains
+ * the pure synchronous boundary; `saveStorage.ts` is the only module touching
+ * device storage. This hook owns the run lifecycle around them. The save slot is
+ * hydrated once on mount from durable storage behind a `hydratedRef` barrier:
+ * `save()`/auto-save are no-ops until hydration settles, so a first move cannot
+ * clobber a stored run. Hydration never replaces the live run — the fresh run is
+ * built synchronously and resumes only when the user explicitly presses Resume
+ * (design D4 merge policy, not auto-resume). The public `save`/`resume` handlers
+ * stay synchronous `() => void`; the async I/O is internal, so `KeyboardHandlers`
+ * / `ActionBar` / the provider types do not drift.
+ *
+ * Save feedback and errors (design D3): a successful save flips a transient
+ * presentation-only `savedIndicator` boolean (no clock/random; the client clears
+ * it on the next action) and any storage/hydration failure lands in the separate
+ * non-fatal `saveError` channel — never the fatal pack-load `error`, which would
+ * hide the game behind the pack-load error screen.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -38,9 +49,20 @@ import type { Command, GameState, LoadedPack } from '@engine';
 import { fantasyPack } from '../../packs/fantasy';
 import { createInitialState } from '../state/createInitialState';
 import { resumeRunState, saveRun } from '../logic/save';
+import { createAsyncStorageAdapter, createSaveStorage } from '../logic/saveStorage';
+import type { SaveStorage } from '../logic/saveStorage';
+import type { RunState } from '../logic/save';
 
 /** The default run seed until a seed-selection UI exists. */
 const DEFAULT_SEED = 1;
+
+/**
+ * The durable store, created once at module scope from the real AsyncStorage
+ * adapter. `saveStorage.ts` owns the native import; this hook only holds the
+ * resulting `SaveStorage` value. Kept out of component state because it is a
+ * plain object with no React identity.
+ */
+const saveStorage: SaveStorage = createSaveStorage(createAsyncStorageAdapter());
 
 /**
  * The recoverable startup failure surfaced to the UI (design D7).
@@ -62,22 +84,34 @@ export interface UseGameResult {
   dispatch: (command: Command) => void;
   /**
    * Saves the current run through the engine's `serializeSave` path (the full
-   * state + full command log + `appliedCount` cursor) into the client store.
-   * No-op before load.
+   * state + full command log + `appliedCount` cursor) to durable storage. The
+   * handler is synchronous (`() => void`); the storage write is internal. No-op
+   * before load or before hydration settles.
    */
   save: () => void;
   /**
    * Resumes the stored save through the engine's `resumeRun` path, replacing
    * live state with the resumed state. No-op when there is no save or the save
-   * cannot be loaded (a load error is surfaced via `error`).
+   * cannot be loaded (a load error is surfaced via `saveError`).
    */
   resume: () => void;
   /** Starts a fresh run (new seed) and clears the game-over surface. */
   newRun: () => void;
-  /** True when a save exists in the client store and can be resumed. */
+  /** True when a save exists and can be resumed, evaluated after hydration. */
   hasSave: boolean;
-  /** A recoverable startup/save failure, or `undefined` on success. */
+  /**
+   * A recoverable fatal startup failure (e.g. a bad content pack), or
+   * `undefined` on success. This hides the game behind the error surface and is
+   * never set by the persistence path.
+   */
   error: GameError | undefined;
+  /**
+   * A non-fatal storage/hydration failure, or `undefined` on success. Surfaced
+   * inline in the UI while play continues; never routed to the fatal `error`.
+   */
+  saveError: GameError | undefined;
+  /** True for a short spell after an explicit successful save. */
+  savedIndicator: boolean;
 }
 
 /** The outcome of the one-time startup load. */
@@ -121,10 +155,18 @@ function asError(caught: unknown): GameError {
 export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
   const [startup, setStartup] = useState<StartupResult>(() => loadGame(seed));
 
-  // The client-side store. An in-memory string is sufficient for this stage and
-  // keeps `src/engine` free of platform I/O (design D8/D10). Persistence across
-  // sessions would swap only this slot for an AsyncStorage-backed ref.
+  // The client-side save slot, hydrated once from durable storage. The live
+  // `GameState` is built synchronously above, so first paint is the fresh run
+  // and never waits on the load.
   const [saveStore, setSaveStore] = useState<string | undefined>(undefined);
+
+  // Non-fatal persistence failure (load or write). Separate from the fatal
+  // pack-load `startup.error` so a storage hiccup never hides the game.
+  const [saveError, setSaveError] = useState<GameError | undefined>(undefined);
+
+  // Presentation-only "Saved" flag. Cleared on the next successful action; uses
+  // no clock or randomness, and is never part of stored content.
+  const [savedIndicator, setSavedIndicator] = useState(false);
 
   // The command log and cursor for the *current* run. They are a ref, not state:
   // appending to them must not trigger a re-render, and a save reads both plus
@@ -137,46 +179,105 @@ export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
   // rebuilding the same level from the constant prop (finding 3).
   const seedRef = useRef(seed);
 
+  // The hydration barrier (design D3). `false` until the one-time load effect
+  // settles (success or failure); save/auto-save are no-ops while false, so a
+  // first move cannot overwrite a stored run before the load resolves.
+  const hydratedRef = useRef(false);
+
+  // True once this session has written the slot. Hydration must not overwrite a
+  // slot written earlier in the session (the other half of the same race).
+  const wroteRef = useRef(false);
+
+  // A mirror of the *committed* `{ state, pack }`. `dispatch` reads it to apply
+  // the next command OUTSIDE a `setState` updater (which React may invoke more
+  // than once), keeping the command application + log append single-shot and
+  // replay-safe. Kept in sync at every state-mutating path (init, dispatch,
+  // resume, newRun) via the `commitRun` helper below.
+  const latestRunRef = useRef<{ state: GameState | undefined; pack: LoadedPack | undefined }>({
+    state: startup.state,
+    pack: startup.pack,
+  });
+
+  /** Records the current `{ state, pack }` into the dispatch mirror. */
+  const commitRun = useCallback((state: GameState | undefined, pack: LoadedPack | undefined) => {
+    latestRunRef.current = { state, pack };
+  }, []);
+
   /** The live run as the pure save helper sees it. */
-  const currentRun = useCallback((): { state: GameState; commands: Command[]; appliedCount: number } | undefined => {
-    if (startup.state === undefined) return undefined;
+  const currentRun = useCallback((): RunState | undefined => {
+    // Read the dispatch mirror, not the committed render value: `dispatch`
+    // updates `latestRunRef` synchronously, so this stays consistent with the
+    // log/cursor even if a save is invoked in the same tick as an uncommitted
+    // dispatch (avoids saving one turn behind).
+    const { state } = latestRunRef.current;
+    if (state === undefined) return undefined;
     return {
-      state: startup.state,
+      state,
       commands: logRef.current,
       appliedCount: appliedRef.current,
     };
-  }, [startup.state]);
+  }, []);
+
+  /**
+   * Persists a serialized run to durable storage. Reads the pure envelope at the
+   * call site; the async write is fired without blocking the caller. Failures
+   * surface through `saveError` (never thrown out of render) and leave the game
+   * running (spec: app-shell "A storage failure is surfaced without hiding the
+   * game").
+   */
+  const persist = useCallback((envelope: string) => {
+    void saveStorage.persistSave(envelope).then(
+      () => {
+        setSaveError(undefined);
+      },
+      (caught: unknown) => {
+        setSaveError(asError(caught));
+      },
+    );
+  }, []);
 
   const dispatch = useCallback((command: Command) => {
-    setStartup((current) => {
-      if (current.state === undefined || current.pack === undefined) {
-        return current;
-      }
-      const result = applyCommandWithPack(
-        current.state,
-        command,
-        rngFromState(current.state.rng),
-        current.pack,
-      );
-      // The command is applied to the live state immediately (so play is
-      // responsive); the refs record the log + cursor for the next save.
-      logRef.current = [...logRef.current, command];
-      appliedRef.current = logRef.current.length;
-      return { ...current, state: result.state };
-    });
+    // Dispatching is a user action: clear the transient "Saved" acknowledgement
+    // so the next save (or auto-save) can show it again.
+    setSavedIndicator(false);
+    // Compute the next run OUTSIDE the state updater. React may invoke a
+    // `setState` updater more than once under concurrent rendering, so an
+    // updater must be pure; applying the command and appending to the log here
+    // (in the event handler) keeps both the state transition and the log/cursor
+    // single-shot and replay-safe. `latestRunRef` mirrors the committed run.
+    const current = latestRunRef.current;
+    if (current.state === undefined || current.pack === undefined) return;
+    const result = applyCommandWithPack(
+      current.state,
+      command,
+      rngFromState(current.state.rng),
+      current.pack,
+    );
+    logRef.current = [...logRef.current, command];
+    appliedRef.current = logRef.current.length;
+    latestRunRef.current = { state: result.state, pack: current.pack };
+    setStartup((prev) => ({ ...prev, state: result.state }));
   }, []);
 
   const save = useCallback(() => {
+    // No-op until hydration settles: a save before the load resolves must not
+    // overwrite the stored run (design D3 hydration barrier).
+    if (!hydratedRef.current) return;
     const run = currentRun();
     if (run === undefined) return;
     // `saveRun` serializes the FULL current state + FULL log + cursor; the live
     // state is only read, never mutated (spec: app-shell "Auto-save does not
     // disturb play").
-    setSaveStore(saveRun(run));
-  }, [currentRun]);
+    const envelope = saveRun(run);
+    wroteRef.current = true;
+    setSaveStore(envelope);
+    setSavedIndicator(true);
+    persist(envelope);
+  }, [currentRun, persist]);
 
   const resume = useCallback(() => {
     if (saveStore === undefined) return;
+    setSavedIndicator(false);
     try {
       // The engine replays only `commands.slice(appliedCount)` from the saved
       // state (design D8); the client resets its log/cursor to the envelope so
@@ -184,11 +285,13 @@ export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
       const run = resumeRunState(saveStore, startup.pack);
       logRef.current = run.commands;
       appliedRef.current = run.appliedCount;
+      commitRun(run.state, startup.pack);
       setStartup((prev) => ({ ...prev, state: run.state, error: undefined }));
+      setSaveError(undefined);
     } catch (caught) {
-      setStartup((prev) => ({ ...prev, error: asError(caught) }));
+      setSaveError(asError(caught));
     }
-  }, [saveStore, startup.pack]);
+  }, [saveStore, startup.pack, commitRun]);
 
   const newRun = useCallback(() => {
     // A new run clears the game-over surface by building fresh initial state
@@ -202,30 +305,65 @@ export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
     seedRef.current = nextSeed;
     logRef.current = [];
     appliedRef.current = 0;
+    const nextState = createInitialState(nextSeed, current.pack);
+    commitRun(nextState, current.pack);
+    setSavedIndicator(false);
     setStartup({
       ...current,
-      state: createInitialState(nextSeed, current.pack),
+      state: nextState,
       error: undefined,
     });
-  }, [startup]);
+  }, [startup, commitRun]);
 
-  // Auto-save on turn boundaries (design D10): every state change caused by a
-  // dispatched command is a boundary, so the effect persists the run without a
-  // user action. It reads the live state and never writes it, so play is
-  // undisturbed (spec: app-shell "Auto-save preserves the run without user
-  // action"). The initial state (an empty log) is intentionally not saved —
-  // there is nothing to resume yet.
+  // One-time hydration (design D3/D4): load any stored save and expose it to
+  // Resume. The live run is untouched — resume only swaps state when the user
+  // presses Resume. Hydration settles the barrier even on failure so save/auto-
+  // save become live; a load failure surfaces via `saveError`.
   useEffect(() => {
+    let cancelled = false;
+    void saveStorage.loadSave().then(
+      (stored) => {
+        if (cancelled) return;
+        // Do not overwrite a slot written earlier this session.
+        if (!wroteRef.current) {
+          setSaveStore(stored);
+        }
+      },
+      (caught: unknown) => {
+        if (cancelled) return;
+        setSaveError(asError(caught));
+      },
+    ).finally(() => {
+      if (!cancelled) {
+        hydratedRef.current = true;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Auto-save on turn boundaries (design D10, extended D3): every state change
+  // caused by a dispatched command is a boundary, so the effect persists the run
+  // without a user action. It reads the live state and never writes it, so play
+  // is undisturbed (spec: app-shell "Auto-save preserves the run without user
+  // action"). Behind the hydration barrier; the initial state (an empty log) is
+  // intentionally not saved — there is nothing to resume yet. Auto-save does NOT
+  // raise the transient "Saved" acknowledgement: that feedback is reserved for an
+  // explicit Save press, so it stays meaningful rather than ambient.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
     if (startup.state === undefined) return;
     if (logRef.current.length === 0) return;
-    setSaveStore(
-      saveRun({
-        state: startup.state,
-        commands: logRef.current,
-        appliedCount: appliedRef.current,
-      }),
-    );
-  }, [startup.state]);
+    const envelope = saveRun({
+      state: startup.state,
+      commands: logRef.current,
+      appliedCount: appliedRef.current,
+    });
+    wroteRef.current = true;
+    setSaveStore(envelope);
+    persist(envelope);
+  }, [startup.state, persist]);
 
   return {
     state: startup.state,
@@ -236,5 +374,7 @@ export function useGame(seed: number = DEFAULT_SEED): UseGameResult {
     newRun,
     hasSave: saveStore !== undefined,
     error: startup.error,
+    saveError,
+    savedIndicator,
   };
 }

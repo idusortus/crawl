@@ -10,9 +10,10 @@
  *    and a pack lookup throws `UnknownContentIdError` on a miss;
  *  - the level is generated from an RNG seeded from `seed`, the exact same
  *    injected RNG the command loop threads through state;
- *  - the returned state's `rng` is captured **after** `generateLevel` has drawn
- *    its randomness, so dispatching a command continues the stream rather than
- *    replaying the generation draws (design D4).
+ *  - the returned state's `rng` is captured **after** both `generateLevel` and
+ *    `populateLevel` have drawn from the **same** `Rng` instance, so dispatching
+ *    a command continues the stream rather than replaying the generation or
+ *    population draws (design D4/D6/D7).
  *
  * Everything here flows through the `@engine` public surface — the UI is a pure
  * client of the engine and must never reach deeper into `src/engine`.
@@ -24,6 +25,7 @@ import {
   DEFAULT_SIGHT_RADIUS,
   exploreInto,
   generateLevel,
+  populateLevel,
   rngToState,
 } from '@engine';
 import type { GameState, LoadedPack } from '@engine';
@@ -65,12 +67,23 @@ export function createInitialState(seed: number, pack: LoadedPack): GameState {
     depth: LEVEL_DEPTH,
   });
 
+  // The player's class stats are copied from the pack at spawn (design D2):
+  // without `attack` the engine would fall back to `DEFAULT_ATTACK` (1) and the
+  // fighter would hit for 1 instead of its class's 4.
   const player = {
     id: PLAYER_ID,
     kind: PLAYER_CLASS_ID,
     pos: generated.level.spawn,
     hp: pack.class(PLAYER_CLASS_ID).hp,
+    attack: pack.class(PLAYER_CLASS_ID).attack,
   };
+
+  // Population shares the SAME `rng` instance generation just consumed, so
+  // depth 1 has monsters/items (design D6/D7's one-shared-`Rng` contract). The
+  // player is placed first, then the population; initial population emits no
+  // events.
+  const populated = populateLevel(generated, pack, rng);
+  const entities = [player, ...populated.entities];
 
   const visible = computeFov(
     generated.grid,
@@ -89,9 +102,11 @@ export function createInitialState(seed: number, pack: LoadedPack): GameState {
     level: generated.level,
     explored,
     playerId: PLAYER_ID,
-    entities: [player],
-    // Capture the RNG state AFTER `generateLevel` consumed its draws, so the
-    // next command resumes the stream instead of replaying generation.
+    entities,
+    status: 'playing',
+    carriedItemIds: [],
+    // Capture the RNG state AFTER generation + population consumed their draws,
+    // so the next command resumes the stream instead of replaying either.
     rng: rngToState(seed, rng),
     events: [],
   };

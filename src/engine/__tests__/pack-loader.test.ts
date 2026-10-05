@@ -15,10 +15,12 @@ function validPack(): Record<string, unknown> {
     name: 'Fantasy Core',
     version: PACK_VERSION,
     classes: [
-      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12 },
-      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8 },
+      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12, attack: 4 },
+      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, attack: 3 },
     ],
-    monsters: [{ id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4 }],
+    monsters: [
+      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: 'chase', attack: 2 },
+    ],
     items: [
       { id: 'potion', name: 'Healing Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
     ],
@@ -93,7 +95,7 @@ describe('loadPack — invalid pack yields no loaded pack', () => {
 describe('loadPack — composition floor (loader policy, not schema)', () => {
   it('rejects a pack with only one class', () => {
     const pack = validPack();
-    pack.classes = [{ id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12 }];
+    pack.classes = [{ id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12, attack: 4 }];
 
     // The schema permits it; the loader must not.
     expect(validatePack(pack).ok).toBe(true);
@@ -125,7 +127,7 @@ describe('loadPack — composition floor (loader policy, not schema)', () => {
 
   it('reports every floor violation it finds in one message', () => {
     const pack = validPack();
-    pack.classes = [{ id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12 }];
+    pack.classes = [{ id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12, attack: 4 }];
     pack.monsters = [];
     pack.items = [];
 
@@ -142,14 +144,28 @@ describe('loadPack — known ids resolve to the right entries', () => {
       name: 'Rogue',
       glyph: 'R',
       hp: 8,
+      attack: 3,
     });
     expect(loaded.monster('goblin').name).toBe('Goblin');
     expect(loaded.item('potion').effect).toEqual({ kind: 'heal', amount: 5 });
   });
 
+  it('exposes a resolved monster behavior/attack and a class attack', () => {
+    const loaded = loadPack(validPack());
+
+    const goblin = loaded.monster('goblin');
+    expect(goblin.behavior).toBe('chase');
+    expect(goblin.attack).toBe(2);
+
+    expect(loaded.class('fighter').attack).toBe(4);
+    expect(loaded.class('rogue').attack).toBe(3);
+  });
+
   it('resolves without ambiguity when ids collide across collections', () => {
     const pack = validPack();
-    pack.monsters = [{ id: 'rogue', name: 'Rogue Wolf', glyph: 'w', hp: 6 }];
+    pack.monsters = [
+      { id: 'rogue', name: 'Rogue Wolf', glyph: 'w', hp: 6, behavior: 'chase', attack: 2 },
+    ];
     pack.items = [
       { id: 'rogue', name: 'Rogue Charm', glyph: '?', effect: { kind: 'heal', amount: 2 } },
     ];
@@ -211,6 +227,56 @@ describe('loadPack — deterministic load', () => {
   });
 });
 
+describe('loadPack — stable-order spawnable enumeration', () => {
+  /** A pack whose collections have a meaningful, distinguishable order. */
+  function orderedPack(): Record<string, unknown> {
+    return {
+      id: 'ordered-pack',
+      name: 'Ordered Pack',
+      version: PACK_VERSION,
+      classes: [
+        { id: 'alpha', name: 'Alpha', glyph: 'A', hp: 10, attack: 2 },
+        { id: 'beta', name: 'Beta', glyph: 'B', hp: 8, attack: 3 },
+      ],
+      monsters: [
+        { id: 'first', name: 'First', glyph: '1', hp: 3, behavior: 'chase', attack: 1 },
+        { id: 'second', name: 'Second', glyph: '2', hp: 4, behavior: 'chase', attack: 2 },
+        { id: 'third', name: 'Third', glyph: '3', hp: 5, behavior: 'chase', attack: 3 },
+      ],
+      items: [
+        { id: 'heal', name: 'Heal', glyph: '!', effect: { kind: 'heal', amount: 2 } },
+        { id: 'roll', name: 'Roll', glyph: '?', effect: { kind: 'roll-heal', min: 1, max: 3 } },
+      ],
+    };
+  }
+
+  it('enumerates monsters/items in declared (stable) array order', () => {
+    const loaded = loadPack(orderedPack());
+    expect(loaded.pack.monsters.map((m) => m.id)).toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+    expect(loaded.pack.items.map((i) => i.id)).toEqual(['heal', 'roll']);
+  });
+
+  it('selects the same kind by seeded index across two independent loads', () => {
+    const first = loadPack(orderedPack());
+    const second = loadPack(orderedPack());
+
+    // The same seeded index must resolve to the same kind on both loads.
+    for (const index of [0, 1, 2]) {
+      expect(first.pack.monsters[index].id).toBe(
+        second.pack.monsters[index].id,
+      );
+      expect(first.monster(first.pack.monsters[index].id).behavior).toBe(
+        second.monster(second.pack.monsters[index].id).behavior,
+      );
+    }
+    expect(first.pack.items[0].id).toBe(second.pack.items[0].id);
+  });
+});
+
 describe('content is not embedded in game state', () => {
   it('stores only the content id on a state entity, not the pack entry', () => {
     const loaded = loadPack(validPack());
@@ -223,10 +289,12 @@ describe('content is not embedded in game state', () => {
     };
     const state: GameState = {
       grid: smallGrid,
-      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 1, y: 0 } },
       explored: new Array<boolean>(smallGrid.width * smallGrid.height).fill(false),
       entities: [goblinEntity],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: { seed: 1, state: 1 },
       events: [],
     };
@@ -242,13 +310,15 @@ describe('content is not embedded in game state', () => {
     const loaded = loadPack(validPack());
     const state: GameState = {
       grid: smallGrid,
-      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 1, y: 0 } },
       explored: new Array<boolean>(smallGrid.width * smallGrid.height).fill(false),
       entities: [
         { id: 'player', kind: loaded.class('fighter').id, pos: { x: 0, y: 0 } },
         { id: 'mob-1', kind: loaded.monster('goblin').id, pos: { x: 1, y: 0 } },
       ],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: { seed: 42, state: 7 },
       events: [],
     };

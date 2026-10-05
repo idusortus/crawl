@@ -31,11 +31,11 @@ Keep determinism, framework-freedom, and content-agnosticism as *structural* inv
 - **Behaviors by named id** (later stages): AI/behaviors will be looked up by a named registry id rather than engine-embedded closures.
 - **Import through the public surface.** Outside `src/engine`, import only from `@engine` (`src/engine/index.ts`) — never a deeper module.
 
-For the full staged roadmap, see `PROJECT.md`. Stages 1–4 (`bootstrap-engine-skeleton`, `content-packs-v1`, `levelgen-and-fov`, the APK pipeline) are complete, and Stage 5 (`expo-glyph-renderer`) is complete — the app now boots into a playable glyph screen as a pure `@engine` client. The next stage is Stage 6 (`core-gameplay-loop`): AI, combat, items, stairs, permadeath, save/load.
+For the full staged roadmap, see `PROJECT.md`. Stages 1–5 (`bootstrap-engine-skeleton`, `content-packs-v1`, `levelgen-and-fov`, the APK pipeline, `expo-glyph-renderer`) are complete, and Stage 6 (`core-gameplay-loop`) is complete — the engine is a full deterministic roguelike loop (seeded spawn → monster AI → combat/death → pickup/use → stairs/descend → permadeath, with a JSON-state + command-log save/load surface resumed by replaying the remainder), and the app is a playable pure `@engine` client with attack/pickup/use-item/descend controls, a game-over surface, and save/resume/auto-save. The next stage is Stage 7 (`second-theme-pack`): the "dogs" pack with **no engine changes** — the abstraction-leak test.
 
 ## Constraints
-- Do not add features ahead of the current stage (no AI/combat until Stage 6; no second pack until Stage 7).
-- Do not weaken the `src/engine` purity rules to make a feature fit; treat any needed engine change from a new pack as an abstraction leak to fix. Stage 5 proved a real client can consume `@engine` with zero engine edits — keep it that way.
+- Do not add features ahead of the current stage (no second pack until Stage 7).
+- Do not weaken the `src/engine` purity rules to make a feature fit; treat any needed engine change from a new pack as an abstraction leak to fix. Stage 5 proved a real client can consume `@engine` with zero engine edits, and Stage 6 kept that boundary while adding the whole gameplay loop — keep it that way.
 
 ## Workflow
 1. Read `PROJECT.md` for the long-form vision.

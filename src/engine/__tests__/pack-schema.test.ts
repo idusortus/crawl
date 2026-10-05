@@ -18,11 +18,11 @@ function validFantasyPack(): Record<string, unknown> {
     name: 'Fantasy Core',
     version: PACK_VERSION,
     classes: [
-      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12 },
-      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, description: 'Sneaky.' },
+      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12, attack: 4 },
+      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, attack: 3, description: 'Sneaky.' },
     ],
     monsters: [
-      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4 },
+      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: 'chase', attack: 2 },
     ],
     items: [
       { id: 'potion', name: 'Healing Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
@@ -108,6 +108,12 @@ describe('pack schema — identity is rejected when missing/empty', () => {
     expectFailureWith(pack, 'version', '999');
   });
 
+  it('rejects a previous-version (1) pack and names the version', () => {
+    const pack = validFantasyPack();
+    pack.version = 1;
+    expectFailureWith(pack, 'version', '1', `version ${PACK_VERSION}`);
+  });
+
   it('rejects a non-numeric version', () => {
     const pack = validFantasyPack();
     pack.version = 'one';
@@ -119,8 +125,8 @@ describe('pack schema — duplicate ids within a collection', () => {
   it('rejects duplicate class ids and names the id', () => {
     const pack = validFantasyPack();
     pack.classes = [
-      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12 },
-      { id: 'fighter', name: 'Fighter Two', glyph: 'f', hp: 10 },
+      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12, attack: 4 },
+      { id: 'fighter', name: 'Fighter Two', glyph: 'f', hp: 10, attack: 3 },
     ];
     expectFailureWith(pack, 'class', 'fighter');
   });
@@ -128,8 +134,8 @@ describe('pack schema — duplicate ids within a collection', () => {
   it('rejects duplicate monster ids and names the id', () => {
     const pack = validFantasyPack();
     pack.monsters = [
-      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4 },
-      { id: 'goblin', name: 'Goblin Chief', glyph: 'G', hp: 9 },
+      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: 'chase', attack: 2 },
+      { id: 'goblin', name: 'Goblin Chief', glyph: 'G', hp: 9, behavior: 'chase', attack: 3 },
     ];
     expectFailureWith(pack, 'monster', 'goblin');
   });
@@ -145,7 +151,9 @@ describe('pack schema — duplicate ids within a collection', () => {
 
   it('does not reject the same id across different collections', () => {
     const pack = validFantasyPack();
-    pack.monsters = [{ id: 'rogue', name: 'Rogue Wolf', glyph: 'w', hp: 6 }];
+    pack.monsters = [
+      { id: 'rogue', name: 'Rogue Wolf', glyph: 'w', hp: 6, behavior: 'chase', attack: 2 },
+    ];
     expect(validatePack(pack).ok).toBe(true);
   });
 });
@@ -170,6 +178,44 @@ describe('pack schema — missing required stat', () => {
       { id: 'rogue', name: 'Rogue', glyph: 'R', hp: -3 },
     ];
     expectFailureWith(pack, 'hp');
+  });
+
+  it('rejects a monster missing behavior and names the entry path', () => {
+    const pack = validFantasyPack();
+    pack.monsters = [{ id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, attack: 2 }];
+    expectFailureWith(pack, 'monsters[0]', 'behavior');
+  });
+
+  it('rejects a monster missing attack and names the entry path', () => {
+    const pack = validFantasyPack();
+    pack.monsters = [{ id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: 'chase' }];
+    expectFailureWith(pack, 'monsters[0]', 'attack');
+  });
+
+  it('rejects a class missing attack and names the entry path', () => {
+    const pack = validFantasyPack();
+    pack.classes = [
+      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12 },
+      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, attack: 3 },
+    ];
+    expectFailureWith(pack, 'classes[0]', 'attack');
+  });
+
+  it('rejects a class with zero/negative attack (positive required)', () => {
+    const pack = validFantasyPack();
+    pack.classes = [
+      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 12, attack: 0 },
+      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, attack: -3 },
+    ];
+    expectFailureWith(pack, 'attack');
+  });
+
+  it('rejects a monster with zero/negative attack (positive required)', () => {
+    const pack = validFantasyPack();
+    pack.monsters = [
+      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: 'chase', attack: 0 },
+    ];
+    expectFailureWith(pack, 'attack');
   });
 
   it('rejects an item missing its effect', () => {
@@ -205,10 +251,26 @@ describe('pack schema — wrong-typed field', () => {
   it('rejects a non-number hp and reports the hp path', () => {
     const pack = validFantasyPack();
     pack.classes = [
-      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 'twelve' },
-      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8 },
+      { id: 'fighter', name: 'Fighter', glyph: 'F', hp: 'twelve', attack: 4 },
+      { id: 'rogue', name: 'Rogue', glyph: 'R', hp: 8, attack: 3 },
     ];
     expectFailureWith(pack, 'classes[0]', 'hp');
+  });
+
+  it('rejects a numeric (non-string) behavior and reports the behavior path', () => {
+    const pack = validFantasyPack();
+    pack.monsters = [
+      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: 7, attack: 2 },
+    ];
+    expectFailureWith(pack, 'monsters[0]', 'behavior');
+  });
+
+  it('rejects an empty behavior id', () => {
+    const pack = validFantasyPack();
+    pack.monsters = [
+      { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 4, behavior: '', attack: 2 },
+    ];
+    expectFailureWith(pack, 'monsters[0]', 'behavior');
   });
 
   it('rejects a missing (rather than empty) collection', () => {
@@ -253,11 +315,11 @@ describe('pack schema — theme-agnostic proof', () => {
       name: 'Orbital Station',
       version: PACK_VERSION,
       classes: [
-        { id: 'android', name: 'Android', glyph: 'A', hp: 14, description: 'Synthetic.' },
-        { id: 'engineer', name: 'Engineer', glyph: 'E', hp: 9 },
+        { id: 'android', name: 'Android', glyph: 'A', hp: 14, attack: 5, description: 'Synthetic.' },
+        { id: 'engineer', name: 'Engineer', glyph: 'E', hp: 9, attack: 3 },
       ],
       monsters: [
-        { id: 'drone', name: 'Security Drone', glyph: 'd', hp: 5 },
+        { id: 'drone', name: 'Security Drone', glyph: 'd', hp: 5, behavior: 'chase', attack: 2 },
       ],
       items: [
         {

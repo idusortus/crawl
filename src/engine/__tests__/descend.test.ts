@@ -1,20 +1,28 @@
 /**
  * `descend` command + level-change wiring tests (change `levelgen-and-fov`,
- * phase 4, tasks 4.1–4.4 / design D5–D7).
+ * phase 4, tasks 4.1–4.4 / design D5–D7; gating + population added by change
+ * `core-gameplay-loop`, phase 7, tasks 7.1/7.2 / design D6).
  *
- * These exercise the first world-progression command end-to-end:
+ * These exercise the world-progression command end-to-end:
  *
- *  - `descend` generates a level at `depth + 1`, places the player at its spawn,
- *    and emits an observable `level-changed { depth }` event;
+ *  - the **stairs gate**: an off-stairs descend is a pure `noop('not-on-stairs')`
+ *    that never generates (level/grid/stairs/explored/entities/rng unchanged);
+ *  - an on-stairs descend generates a level at `depth + 1`, places the player at
+ *    its spawn, and emits an observable `level-changed { depth }` event;
+ *  - the new level is **populated** with monsters/items through the pack-aware
+ *    entry point, the player's spawn being distinct from the stairs and every
+ *    monster/item;
  *  - it is deterministic: the same descend sequence from the same seed yields
- *    byte-identical states (generation draws only from the injected RNG);
+ *    byte-identical states (generation + population draw from the one injected
+ *    RNG);
  *  - it does not mutate its input state;
  *  - the explored mask is reset per level (no tiles leak from the previous
- *    level), and is immediately seeded from the new spawn's FOV;
+ *    level);
  *  - the new level is immediately playable (a subsequent `move` succeeds);
  *  - the post-descend state round-trips through JSON and behaves identically
  *    for further commands;
- *  - it resolves through **both** `applyCommand` and `applyCommandWithPack`;
+ *  - it resolves through **both** `applyCommand` (unpopulated) and
+ *    `applyCommandWithPack` (populated);
  *  - unknown commands still degrade to `noop` after the union gains `descend`.
  *
  * Vitest globals are OFF, so `describe`/`it`/`expect` are imported explicitly.
@@ -32,6 +40,8 @@ import { applyCommandWithPack } from '../commands';
 import { levelChanged } from '../events';
 import { loadPack } from '../pack';
 import { computeFov, DEFAULT_SIGHT_RADIUS } from '../fov';
+import { isFeature, isLiving, isStairs } from '../grid';
+import type { LoadedPack } from '../pack';
 import type { Command, GameState, Position } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -40,17 +50,20 @@ import type { Command, GameState, Position } from '../types';
 
 const at = (x: number, y: number): Position => ({ x, y });
 
-/** A minimal valid pack; `descend` needs no content, so any loaded pack works. */
-function testPack() {
+/** A minimal valid pack: enough content for the new level to be populated. */
+function testPack(): LoadedPack {
   return loadPack({
     id: 'descend-test-pack',
     name: 'Descend Test Pack',
-    version: 1,
+    version: 2,
     classes: [
-      { id: 'hero', name: 'Hero', glyph: '@', hp: 10 },
-      { id: 'sage', name: 'Sage', glyph: 'S', hp: 8 },
+      { id: 'hero', name: 'Hero', glyph: '@', hp: 10, attack: 4 },
+      { id: 'sage', name: 'Sage', glyph: 'S', hp: 8, attack: 3 },
     ],
-    monsters: [{ id: 'slime', name: 'Slime', glyph: 's', hp: 2 }],
+    monsters: [
+      { id: 'slime', name: 'Slime', glyph: 's', hp: 2, behavior: 'chase', attack: 1 },
+      { id: 'bat', name: 'Bat', glyph: 'b', hp: 3, behavior: 'idle', attack: 2 },
+    ],
     items: [
       {
         id: 'potion',
@@ -69,8 +82,10 @@ function testPack() {
  *   y=1:  . # .
  *   y=2:  . # .
  *
- * Player at (0, 0) and spawn (0, 0). Depth is pinned to 1 so a descend reaches
- * depth 2.
+ * Spawn is (0, 0) and stairs are (2, 2). The player is placed **on the stairs**
+ * so a `descend` succeeds under the Phase-7 gate; tests that need to exercise
+ * the off-stairs path override the player position. Depth is pinned to 1 so a
+ * descend reaches depth 2.
  */
 function makeState(seed = 0x51eed): GameState {
   const grid = createGrid([
@@ -81,10 +96,12 @@ function makeState(seed = 0x51eed): GameState {
   const rng = createRng(seed);
   return {
     grid,
-    level: { depth: 1, spawn: at(0, 0) },
+    level: { depth: 1, spawn: at(0, 0), stairs: at(2, 2) },
     explored: new Array<boolean>(grid.width * grid.height).fill(false),
-    entities: [{ id: 'player', kind: 'player', pos: at(0, 0) }],
+    entities: [{ id: 'player', kind: 'player', pos: at(2, 2) }],
     playerId: 'player',
+    status: 'playing',
+    carriedItemIds: [],
     rng: { seed, state: rng.state() },
     events: [],
   };
@@ -95,8 +112,37 @@ function playerPos(state: GameState): Position | undefined {
   return state.entities.find((entity) => entity.id === state.playerId)?.pos;
 }
 
+/**
+ * A fixture edit (not an engine command): move the player onto the current
+ * level's stairs so the next `descend` is on-stairs. Mirrors the e2e test's
+ * `runMixed` fixture edit, since M1 has no teleport command.
+ */
+function placeOnStairs(state: GameState): GameState {
+  return {
+    ...state,
+    entities: state.entities.map((entity) =>
+      entity.id === state.playerId
+        ? { ...entity, pos: { ...state.level.stairs } }
+        : entity,
+    ),
+  };
+}
+
+/** Convenience: descend via the pack-aware entry point. */
+function descendWithPack(
+  state: GameState,
+  pack: LoadedPack,
+): ReturnType<typeof applyCommandWithPack> {
+  return applyCommandWithPack(
+    state,
+    { type: 'descend' },
+    rngFromState(state.rng),
+    pack,
+  );
+}
+
 // ---------------------------------------------------------------------------
-// 4.1/4.2 — descend generates a deeper level, player at spawn, event emitted
+// 7.1 — descend generates a deeper level, player at spawn, event emitted
 // ---------------------------------------------------------------------------
 
 describe('descend generates a deeper level', () => {
@@ -136,6 +182,9 @@ describe('descend generates a deeper level', () => {
   it('can descend repeatedly, increasing depth each time', () => {
     let state = makeState();
     for (let expectedDepth = 2; expectedDepth <= 5; expectedDepth++) {
+      // Under the stairs gate the player must stand on each level's stairs
+      // before descending; reposition via a fixture edit between steps.
+      state = placeOnStairs(state);
       const rng = rngFromState(state.rng);
       state = applyCommand(state, { type: 'descend' }, rng).state;
       expect(state.level.depth).toBe(expectedDepth);
@@ -150,6 +199,50 @@ describe('descend generates a deeper level', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 7.1 — the stairs gate: off-stairs is a pure noop
+// ---------------------------------------------------------------------------
+
+describe('descend off the stairs is a no-op', () => {
+  it('emits noop(not-on-stairs) and leaves the level entirely unchanged', () => {
+    // The fixture's player starts on the stairs; move them off it (spawn tile).
+    const gated: GameState = {
+      ...makeState(),
+      entities: [{ id: 'player', kind: 'player', pos: at(0, 0) }],
+    };
+    const before = JSON.parse(JSON.stringify(gated)) as GameState;
+
+    const result = applyCommand(gated, { type: 'descend' }, rngFromState(gated.rng));
+
+    // Exactly one noop; no level-changed, no generation.
+    expect(result.events).toEqual([noop('not-on-stairs')]);
+    expect(result.state.level).toEqual(before.level);
+    expect(result.state.grid).toEqual(before.grid);
+    expect(result.state.explored).toEqual(before.explored);
+    expect(result.state.entities).toEqual(before.entities);
+    // The gate is checked before generation, so the RNG does not advance either.
+    expect(result.state.rng).toEqual(before.rng);
+    // And the input state is not mutated.
+    expect(gated).toEqual(before);
+  });
+
+  it('a descend off the stairs does not populate or generate a deeper level', () => {
+    const gated: GameState = {
+      ...makeState(),
+      level: { depth: 3, spawn: at(0, 0), stairs: at(2, 2) },
+      entities: [{ id: 'player', kind: 'player', pos: at(0, 1) }],
+    };
+    const { state } = applyCommand(
+      gated,
+      { type: 'descend' },
+      rngFromState(gated.rng),
+    );
+    expect(state.level.depth).toBe(3);
+    expect(state.grid.width).toBe(3);
+    expect(state.entities).toEqual(gated.entities);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 4.2/4.4 — determinism, purity, RNG threading
 // ---------------------------------------------------------------------------
 
@@ -158,6 +251,7 @@ describe('descend determinism and purity', () => {
     function run(): GameState {
       let state = makeState(0xd00d);
       for (let i = 0; i < 3; i++) {
+        state = placeOnStairs(state);
         state = applyCommand(
           state,
           { type: 'descend' },
@@ -200,7 +294,7 @@ describe('descend determinism and purity', () => {
     expect(JSON.parse(JSON.stringify(before))).toEqual(snapshot);
     expect(before.grid.width).toBe(3);
     expect(before.level.depth).toBe(1);
-    expect(playerPos(before)).toEqual(at(0, 0));
+    expect(playerPos(before)).toEqual(at(2, 2));
     expect(before.events).toEqual([]);
   });
 });
@@ -277,6 +371,96 @@ describe('descend resets the per-level explored mask', () => {
       DEFAULT_SIGHT_RADIUS,
     );
     expect(state.explored).toEqual(visibleAtSpawn);
+  });
+
+  it('reflects only the new level even when the pack-aware path populates it', () => {
+    const before = makeState();
+    const pack = testPack();
+    const { state } = descendWithPack(before, pack);
+
+    // The explored record is exactly the new spawn's FOV — populated monsters
+    // and items do not add explored tiles.
+    const visibleAtSpawn = computeFov(
+      state.grid,
+      state.level.spawn,
+      DEFAULT_SIGHT_RADIUS,
+    );
+    expect(state.explored).toEqual(visibleAtSpawn);
+    expect(state.explored).toHaveLength(state.grid.width * state.grid.height);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7.2 — populated descent (pack-aware path)
+// ---------------------------------------------------------------------------
+
+describe('a descended level is populated from the pack', () => {
+  it('places monsters and items and puts the player on a distinct spawn tile', () => {
+    const before = makeState(0x51eed);
+    const pack = testPack();
+
+    const { state } = descendWithPack(before, pack);
+
+    // The new level carries a population of monsters and items.
+    const monsters = state.entities.filter((entity) => isLiving(entity));
+    const items = state.entities.filter((entity) => isFeature(entity));
+    expect(monsters.length).toBeGreaterThan(0);
+    expect(items.length).toBeGreaterThan(0);
+
+    // Player + population is the whole entity list (no old level leaked over).
+    expect(state.entities).toHaveLength(1 + monsters.length + items.length);
+
+    // The player sits on the passable spawn, distinct from the stairs...
+    const player = state.entities.find((entity) => entity.id === state.playerId);
+    expect(player?.pos).toEqual(state.level.spawn);
+    expect(isStairs(player!.pos, state.level.stairs)).toBe(false);
+
+    // ...and distinct from every placed monster and item.
+    for (const placed of [...monsters, ...items]) {
+      expect(placed.pos).not.toEqual(player!.pos);
+      expect(placed.pos).not.toEqual(state.level.stairs);
+    }
+
+    // A single level-changed event; the fresh monsters do not act this turn.
+    expect(state.events.map((event) => event.type)).toEqual(['level-changed']);
+  });
+
+  it('selects every placed kind from the supplied pack', () => {
+    const pack = testPack();
+    const monsterIds = new Set(pack.pack.monsters.map((m) => m.id));
+    const itemIds = new Set(pack.pack.items.map((i) => i.id));
+
+    for (let seed = 1; seed <= 20; seed++) {
+      const { state } = descendWithPack(makeState(seed), pack);
+      for (const entity of state.entities) {
+        if (entity.id === state.playerId) continue;
+        const pool = isFeature(entity) ? itemIds : monsterIds;
+        expect(pool.has(entity.kind)).toBe(true);
+      }
+    }
+  });
+
+  it('reproduces the same next level and population from the same seed', () => {
+    const pack = testPack();
+    const a = descendWithPack(makeState(0xbeef), pack).state;
+    const b = descendWithPack(makeState(0xbeef), pack).state;
+    // Whole-state equality covers terrain, level metadata, population, explored.
+    expect(b).toEqual(a);
+  });
+
+  it('places every population entity on a passable in-bounds tile distinct from stairs', () => {
+    const pack = testPack();
+    const { state } = descendWithPack(makeState(0x51eed), pack);
+    for (const entity of state.entities) {
+      if (entity.id === state.playerId) continue;
+      const { x, y } = entity.pos;
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThan(state.grid.width);
+      expect(y).toBeLessThan(state.grid.height);
+      expect(state.grid.passable[y * state.grid.width + x]).toBe(true);
+      expect(isStairs(entity.pos, state.level.stairs)).toBe(false);
+    }
   });
 });
 
@@ -368,7 +552,6 @@ describe('JSON round-trip of a post-descend state', () => {
     // Further identical commands produce identical results from both states.
     const commands: Command[] = [
       { type: 'move', direction: 'south' },
-      { type: 'descend' },
       { type: 'move', direction: 'east' },
     ];
 
@@ -385,6 +568,14 @@ describe('JSON round-trip of a post-descend state', () => {
     expect(fromRoundTripped).toEqual(fromOriginal);
     expect(fromRoundTripped.events).toEqual(fromOriginal.events);
   });
+
+  it('round-trips a populated post-descend state without loss', () => {
+    const pack = testPack();
+    const afterDescend = descendWithPack(makeState(), pack).state;
+    const roundTripped: GameState = JSON.parse(JSON.stringify(afterDescend));
+    expect(roundTripped).toEqual(afterDescend);
+    expect(roundTripped.entities).toEqual(afterDescend.entities);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -392,7 +583,7 @@ describe('JSON round-trip of a post-descend state', () => {
 // ---------------------------------------------------------------------------
 
 describe('descend through both command entry points', () => {
-  it('resolves via applyCommand', () => {
+  it('resolves via applyCommand (content-free, unpopulated)', () => {
     const before = makeState();
     const { state, events } = applyCommand(
       before,
@@ -401,9 +592,13 @@ describe('descend through both command entry points', () => {
     );
     expect(state.level.depth).toBe(2);
     expect(events).toEqual([levelChanged(2)]);
+    // The pack-free path generates terrain only (Stage-3 contract): just the
+    // player entity.
+    expect(state.entities).toHaveLength(1);
+    expect(state.entities[0].id).toBe('player');
   });
 
-  it('resolves via applyCommandWithPack identically (pack is irrelevant to descend)', () => {
+  it('resolves via applyCommandWithPack, additionally populating the new level', () => {
     const before = makeState();
     const pack = testPack();
 
@@ -419,8 +614,14 @@ describe('descend through both command entry points', () => {
       pack,
     );
 
-    expect(viaPack.events).toEqual(viaPlain.events);
-    expect(viaPack.state).toEqual(viaPlain.state);
+    // Terrain/level/explored are identical (same shared RNG draw); the pack
+    // path adds the population.
+    expect(viaPack.state.level).toEqual(viaPlain.state.level);
+    expect(viaPack.state.grid).toEqual(viaPlain.state.grid);
+    expect(viaPack.state.explored).toEqual(viaPlain.state.explored);
+    expect(viaPack.state.entities.length).toBeGreaterThan(
+      viaPlain.state.entities.length,
+    );
     expect(viaPack.events).toEqual([levelChanged(2)]);
   });
 });
@@ -490,10 +691,12 @@ describe('movement updates explored (focused fixture)', () => {
     const rng = createRng(42);
     return {
       grid,
-      level: { depth: 1, spawn: at(2, 2) },
+      level: { depth: 1, spawn: at(2, 2), stairs: at(4, 4) },
       explored: new Array<boolean>(grid.width * grid.height).fill(false),
       entities: [{ id: 'player', kind: 'player', pos: at(2, 2) }],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: { seed: 42, state: rng.state() },
       events: [],
     };

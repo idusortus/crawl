@@ -42,12 +42,14 @@ function testPack(): Record<string, unknown> {
   return {
     id: 'test-pack',
     name: 'Test Pack',
-    version: 1,
+    version: 2,
     classes: [
-      { id: 'hero', name: 'Hero', glyph: '@', hp: 10 },
-      { id: 'sage', name: 'Sage', glyph: 'S', hp: 8 },
+      { id: 'hero', name: 'Hero', glyph: '@', hp: 10, attack: 4 },
+      { id: 'sage', name: 'Sage', glyph: 'S', hp: 8, attack: 3 },
     ],
-    monsters: [{ id: 'slime', name: 'Slime', glyph: 's', hp: 2 }],
+    monsters: [
+      { id: 'slime', name: 'Slime', glyph: 's', hp: 2, behavior: 'chase', attack: 1 },
+    ],
     items: [
       { id: 'potion', name: 'Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
       {
@@ -91,10 +93,12 @@ function makeState(hp = 10): GameState {
   const rng = createRng(1234);
   return {
     grid,
-    level: { depth: 1, spawn: { x: 0, y: 0 } },
+    level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 1, y: 1 } },
     explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: [{ id: 'player', kind: 'hero', pos: { x: 0, y: 0 }, hp }],
     playerId: 'player',
+    status: 'playing',
+    carriedItemIds: [],
     rng: { seed: 1234, state: rng.state() },
     events: [],
   };
@@ -339,6 +343,208 @@ describe('use-item — rejection without corruption', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 6.1 — pickup command
+// ---------------------------------------------------------------------------
+
+/** A state with a player and an optional floor item on the player's tile. */
+function pickupState(): GameState {
+  const before = makeState();
+  before.entities = [
+    ...before.entities,
+    { id: 'item-0', kind: 'potion', pos: { x: 0, y: 0 }, item: true },
+  ];
+  return before;
+}
+
+describe('pickup command', () => {
+  it('removes the floor item, carries its kind, and emits item-picked-up', () => {
+    const pack = loadPack(testPack());
+    const before = pickupState();
+
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'pickup' },
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(events).toEqual([
+      {
+        type: 'item-picked-up',
+        actorId: 'player',
+        itemId: 'potion',
+        entityId: 'item-0',
+      },
+    ]);
+    expect(state.entities.some((e) => e.id === 'item-0')).toBe(false);
+    expect(state.carriedItemIds).toEqual(['potion']);
+    // Input state unchanged.
+    expect(before.entities.some((e) => e.id === 'item-0')).toBe(true);
+    expect(before.carriedItemIds).toEqual([]);
+  });
+
+  it('resolves identically through the content-free entry point', () => {
+    const before = pickupState();
+
+    const viaCore = applyCommand(before, { type: 'pickup' }, rngFromState(before.rng));
+    const viaPack = applyCommandWithPack(
+      before,
+      { type: 'pickup' },
+      rngFromState(before.rng),
+      loadPack(testPack()),
+    );
+
+    expect(viaPack.events).toEqual(viaCore.events);
+    expect(viaPack.state).toEqual(viaCore.state);
+  });
+
+  it('degrades to nothing-to-pick-up on an empty tile', () => {
+    const pack = loadPack(testPack());
+    const before = makeState();
+
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'pickup' },
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(events).toEqual([noop('nothing-to-pick-up')]);
+    expect(state.entities).toEqual(before.entities);
+    expect(state.carriedItemIds).toEqual([]);
+    expect(state.rng).toEqual(before.rng);
+  });
+
+  it('degrades a malformed pickup (extra params) to malformed-command', () => {
+    const pack = loadPack(testPack());
+    const before = pickupState();
+
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'pickup', itemId: 'potion' } as unknown as Command,
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(events).toEqual([noop('malformed-command')]);
+    expect(state.entities).toEqual(before.entities);
+    expect(state.carriedItemIds).toEqual([]);
+  });
+
+  it('is deterministic and round-trips through JSON', () => {
+    const pack = loadPack(testPack());
+
+    const run = (start: GameState): GameState =>
+      applyCommandWithPack(start, { type: 'pickup' }, rngFromState(start.rng), pack)
+        .state;
+
+    const a = run(pickupState());
+    const b = run(pickupState());
+    expect(b).toEqual(a);
+
+    const roundTripped: GameState = JSON.parse(JSON.stringify(a));
+    expect(roundTripped).toEqual(a);
+    expect(JSON.stringify(roundTripped)).toBe(JSON.stringify(a));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6.2 — use-item consumes one carried instance (carry gates consumption)
+// ---------------------------------------------------------------------------
+
+describe('use-item consumes a carried instance', () => {
+  it('removes exactly one carried id and applies the effect', () => {
+    const pack = loadPack(testPack());
+    const before = makeState(3);
+    before.carriedItemIds = ['potion'];
+
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'use-item', itemId: 'potion' },
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(events).toEqual([
+      itemUsed('player', 'potion', { kind: 'heal', amount: 5 }),
+    ]);
+    expect(state.carriedItemIds).toEqual([]);
+    expect(state.entities.find((e) => e.id === 'player')?.hp).toBe(8);
+  });
+
+  it('consumes only one instance when the same id is carried twice', () => {
+    const pack = loadPack(testPack());
+    const before = makeState(3);
+    before.carriedItemIds = ['potion', 'elixir', 'potion'];
+
+    const { state } = applyCommandWithPack(
+      before,
+      { type: 'use-item', itemId: 'potion' },
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(state.carriedItemIds).toEqual(['elixir', 'potion']);
+  });
+
+  it('still resolves a non-carried id but consumes nothing (Stage-2 behavior)', () => {
+    const pack = loadPack(testPack());
+    const before = makeState(3);
+    // No carried items at all.
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'use-item', itemId: 'potion' },
+      rngFromState(before.rng),
+      pack,
+    );
+
+    expect(events).toEqual([
+      itemUsed('player', 'potion', { kind: 'heal', amount: 5 }),
+    ]);
+    expect(state.entities.find((e) => e.id === 'player')?.hp).toBe(8);
+    expect(state.carriedItemIds).toEqual([]);
+
+    // A carried-but-different id is also untouched.
+    const other: GameState = { ...makeState(3), carriedItemIds: ['elixir'] };
+    const result = applyCommandWithPack(
+      other,
+      { type: 'use-item', itemId: 'potion' },
+      rngFromState(other.rng),
+      pack,
+    );
+    expect(result.state.carriedItemIds).toEqual(['elixir']);
+  });
+
+  it('still rejects unknown ids and no-actor use without consuming', () => {
+    const pack = loadPack(testPack());
+    const withCarry: GameState = { ...makeState(), carriedItemIds: ['potion'] };
+
+    const unknown = applyCommandWithPack(
+      withCarry,
+      { type: 'use-item', itemId: 'not-in-pack' },
+      rngFromState(withCarry.rng),
+      pack,
+    );
+    expect(unknown.events).toEqual([noop('unknown-item:not-in-pack')]);
+    expect(unknown.state.carriedItemIds).toEqual(['potion']);
+
+    const noActor: GameState = {
+      ...makeState(),
+      playerId: 'ghost',
+      carriedItemIds: ['potion'],
+    };
+    const missing = applyCommandWithPack(
+      noActor,
+      { type: 'use-item', itemId: 'potion' },
+      rngFromState(noActor.rng),
+      pack,
+    );
+    expect(missing.events).toEqual([noop('no-player-entity')]);
+    expect(missing.state.carriedItemIds).toEqual(['potion']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5.4 — observability, round-trip, union extensibility
 // ---------------------------------------------------------------------------
 
@@ -514,10 +720,12 @@ describe('seeded-random use-item is driven by the injected RNG', () => {
       const rng = createRng(seed);
       const state: GameState = {
         grid,
-        level: { depth: 1, spawn: { x: 0, y: 0 } },
+        level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 1, y: 1 } },
         explored: new Array<boolean>(grid.width * grid.height).fill(false),
         entities: [{ id: 'player', kind: 'hero', pos: { x: 0, y: 0 }, hp: 0 }],
         playerId: 'player',
+        status: 'playing',
+        carriedItemIds: [],
         rng: { seed, state: rng.state() },
         events: [],
       };

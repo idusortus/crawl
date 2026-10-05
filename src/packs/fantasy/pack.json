@@ -1,13 +1,14 @@
 {
   "id": "fantasy",
   "name": "Fantasy",
-  "version": 1,
+  "version": 2,
   "classes": [
     {
       "id": "fighter",
       "name": "Fighter",
       "glyph": "@",
       "hp": 14,
+      "attack": 4,
       "description": "A sturdy front-line warrior."
     },
     {
@@ -15,6 +16,7 @@
       "name": "Rogue",
       "glyph": "R",
       "hp": 9,
+      "attack": 3,
       "description": "A quick, lightly-armored scrapper."
     }
   ],
@@ -23,19 +25,25 @@
       "id": "goblin",
       "name": "Goblin",
       "glyph": "g",
-      "hp": 5
+      "hp": 5,
+      "behavior": "chase",
+      "attack": 2
     },
     {
       "id": "giant-rat",
       "name": "Giant Rat",
       "glyph": "r",
-      "hp": 3
+      "hp": 3,
+      "behavior": "chase",
+      "attack": 1
     },
     {
       "id": "skeleton",
       "name": "Skeleton",
       "glyph": "s",
-      "hp": 8
+      "hp": 8,
+      "behavior": "chase",
+      "attack": 3
     }
   ],
   "items": [

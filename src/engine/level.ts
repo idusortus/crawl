@@ -2,7 +2,11 @@
  * Level generation — BSP rooms-and-corridors + a named generator registry.
  *
  * Change `levelgen-and-fov` (tasks 3.1/3.2, design D2/D3): a **pure, seeded**
- * `(seed, depth) -> Level`-style function. The layout is produced by recursive
+ * `(seed, depth) -> Level`-style function. Change `core-gameplay-loop` (tasks
+ * 3.1/3.2, design D6/D7) extends this module with an RNG-drawn `stairs`
+ * placement and the pure, pack-driven `populateLevel` (monsters + items only).
+ *
+ * The layout is produced by recursive
  * binary space partition: the interior region is split until leaves are
  * room-sized, a room is placed in each leaf, and sibling subtrees are joined by
  * carving an L-shaped floor corridor (a horizontal run then a vertical run)
@@ -36,7 +40,9 @@
  */
 
 import { randInt, type Rng } from './rng';
-import type { Grid, Level, Position } from './types';
+import type { LoadedPack } from './pack';
+import type { PackItem, PackMonster } from './schema/pack';
+import type { Entity, Grid, Level, Position } from './types';
 
 /**
  * The terrain + metadata produced by a generator.
@@ -315,6 +321,39 @@ function findSpawn(grid: Grid): Position {
   return { x: 0, y: 0 };
 }
 
+/**
+ * Picks the stairs with a single draw from the injected RNG (change
+ * `core-gameplay-loop`, task 3.1 / design D6). Stairs must be a passable tile
+ * distinct from the spawn so descent is reachable and cannot be triggered from
+ * the player's starting tile.
+ *
+ * Candidate tiles are gathered in **row-major order** (`y*width+x`) excluding
+ * the spawn; the chosen candidate is drawn as a seeded index into that list
+ * (`randInt(rng, 0, candidates.length - 1)`). The row-major candidate order is
+ * a spec-visible convention: it makes the exact stairs tile a pure function of
+ * `(seed, depth, dimensions)`, so the same seed reproduces the same stairs
+ * (design B2's shared-RNG contract).
+ *
+ * Degenerate levels with no floor tile distinct from the spawn (e.g. a 1x1 or
+ * 3x3 request whose only floor tile is the spawn) have no candidate list to
+ * draw from, so this falls back to the spawn — `stairs === spawn` — rather than
+ * throwing. At normal sizes (a BSP level has many floor tiles) the stairs are
+ * always distinct from the spawn. This function draws randomness **only** when
+ * a distinct candidate exists, so a degenerate level does not perturb the
+ * shared RNG stream for its caller beyond generation.
+ */
+function findStairs(rng: Rng, grid: Grid, spawn: Position): Position {
+  const candidates: Position[] = [];
+  for (let index = 0; index < grid.passable.length; index++) {
+    if (grid.passable[index] !== true) continue;
+    const pos = { x: index % grid.width, y: Math.floor(index / grid.width) };
+    if (pos.x !== spawn.x || pos.y !== spawn.y) candidates.push(pos);
+  }
+
+  if (candidates.length === 0) return spawn;
+  return candidates[randInt(rng, 0, candidates.length - 1)];
+}
+
 // ---------------------------------------------------------------------------
 // The BSP generator
 // ---------------------------------------------------------------------------
@@ -365,10 +404,159 @@ export function generateBspLevel(
     carve(grid, Math.floor(width / 2), Math.floor(height / 2));
   }
 
+  const spawn = findSpawn(grid);
   return {
-    level: { depth, spawn: findSpawn(grid) },
+    level: { depth, spawn, stairs: findStairs(rng, grid, spawn) },
     grid,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Population (design D6/D7 — monsters + items only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-depth monster/item count bounds, inclusive. A modest fixed band keeps a
+ * 40×30 level legible while still giving a seeded draw. Bounds are engine
+ * mechanics (spawn counts), not content: the *kinds* are always pack data.
+ *
+ * Both the monster count and the item count are drawn **before** the tile
+ * placement pass, in this fixed order, so `populateLevel` is a pure function of
+ * `(rng state, depth, pack)` (design D7's ordering contract).
+ */
+const MIN_MONSTERS = 2;
+const MAX_MONSTERS = 4;
+const MIN_ITEMS = 1;
+const MAX_ITEMS = 3;
+
+/**
+ * A resolved placement: the tile, the pack id, and whether it is a monster or
+ * an item. The role is carried explicitly (rather than re-derived from the id)
+ * so a cross-collection id collision — the loader only rejects duplicates
+ * *within* a collection — cannot misclassify a placement.
+ */
+type Placement =
+  | { pos: Position; role: 'monster'; entry: PackMonster }
+  | { pos: Position; role: 'item'; entry: PackItem };
+
+/**
+ * The population `populateLevel` resolves: monsters and floor items only.
+ *
+ * Stairs are **not** returned — they are drawn during generation and live on
+ * `GeneratedLevel.level.stairs` (design D6/D7), so including them here would
+ * duplicate the source of truth.
+ */
+export interface LevelPopulation {
+  /** Monsters first, then items, both in placement order. */
+  entities: Entity[];
+}
+
+/**
+ * Populates a generated level with monsters and floor items from a loaded pack
+ * (change `core-gameplay-loop`, tasks 3.2 / design D6/D7).
+ *
+ * This is a **pure** function of the injected RNG, the level's terrain/metadata,
+ * and the loaded pack. It does **not** generate terrain and it does **not** draw
+ * or place stairs (those already live on `generated.level.stairs`) — it only
+ * returns the `entities` array (monsters + items) for the caller to merge with
+ * the player entity.
+ *
+ * ## RNG-sharing contract (design D7, critical)
+ *
+ * The caller creates **one** `Rng` from `state.rng`, passes it to
+ * `generateLevel`, and then passes the **same instance** here — never a fresh
+ * one. All draws (monster count, item count, kind indices, tile indices) come
+ * from that one stream, and the caller captures `state.rng` only after both
+ * generation and population complete. Re-creating an `Rng` mid-step would reset
+ * the stream and break replay.
+ *
+ * ## Tile selection
+ *
+ * Candidate tiles are gathered in **row-major order** (`y*width+x`), skipping
+ * non-passable tiles, the spawn tile, and the stairs tile. Each placement draws
+ * a seeded index into the *remaining* candidates and removes the chosen tile, so
+ * no two placements share a tile and none sits on spawn/stairs. Terrain is never
+ * altered, so **connectivity is preserved by construction**: every passable
+ * tile (including stairs) remains reachable exactly as the generator left it.
+ *
+ * ## Entity shape
+ *
+ * Each monster entity copies its resolved `behavior` (string id) and `attack`
+ * (number) from the pack and carries a numeric `hp`; each item entity carries
+ * the explicit `item: true` discriminator and its pack item `kind`. Ids are
+ * stable and deterministic (`monster-0`, `item-0`, …) so a replay reproduces
+ * exactly the same population.
+ */
+export function populateLevel(
+  generated: GeneratedLevel,
+  pack: LoadedPack,
+  rng: Rng,
+): LevelPopulation {
+  const { grid, level } = generated;
+
+  // Counts are drawn first, in a fixed order, before any tile selection.
+  const monsterCount = randInt(rng, MIN_MONSTERS, MAX_MONSTERS);
+  const itemCount = randInt(rng, MIN_ITEMS, MAX_ITEMS);
+
+  // Candidate tiles: passable, excluding spawn and stairs, row-major.
+  const candidates: Position[] = [];
+  for (let index = 0; index < grid.passable.length; index++) {
+    if (grid.passable[index] !== true) continue;
+    const pos = { x: index % grid.width, y: Math.floor(index / grid.width) };
+    if (pos.x === level.spawn.x && pos.y === level.spawn.y) continue;
+    if (pos.x === level.stairs.x && pos.y === level.stairs.y) continue;
+    candidates.push(pos);
+  }
+
+  const placements: Placement[] = [];
+  const takeTile = (): Position | undefined => {
+    if (candidates.length === 0) return undefined;
+    const tileIndex = randInt(rng, 0, candidates.length - 1);
+    return candidates.splice(tileIndex, 1)[0];
+  };
+
+  const monsters = pack.pack.monsters;
+  for (let i = 0; i < monsterCount; i++) {
+    const pos = takeTile();
+    if (pos === undefined) break;
+    const entry = monsters[randInt(rng, 0, monsters.length - 1)];
+    placements.push({ pos, role: 'monster', entry });
+  }
+
+  const items = pack.pack.items;
+  for (let i = 0; i < itemCount; i++) {
+    const pos = takeTile();
+    if (pos === undefined) break;
+    const entry = items[randInt(rng, 0, items.length - 1)];
+    placements.push({ pos, role: 'item', entry });
+  }
+
+  const entities: Entity[] = [];
+  let monsterIndex = 0;
+  let itemIndex = 0;
+  for (const placement of placements) {
+    const { x, y } = placement.pos;
+    if (placement.role === 'monster') {
+      const monster = placement.entry;
+      entities.push({
+        id: `monster-${monsterIndex++}`,
+        kind: monster.id,
+        pos: { x, y },
+        hp: monster.hp,
+        behavior: monster.behavior,
+        attack: monster.attack,
+      });
+    } else {
+      entities.push({
+        id: `item-${itemIndex++}`,
+        kind: placement.entry.id,
+        pos: { x, y },
+        item: true,
+      });
+    }
+  }
+
+  return { entities };
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,8 @@ import { PLAYER_CLASS_ID } from '../state/createInitialState';
 import {
   entityGlyph,
   FLOOR_GLYPH,
+  isTerminal,
+  STAIRS_GLYPH,
   terrainGlyph,
   tileRender,
   UNKNOWN_GLYPH,
@@ -202,5 +204,86 @@ describe('tileRender', () => {
     expect(
       tileRender({ ...base, visible: false, explored: false, palette }).color,
     ).toBe(palette.unseen);
+  });
+});
+
+describe('tileRender — stairs (change core-gameplay-loop, task 9.1)', () => {
+  const base = { passable: true, pack };
+  const STAIRS: Position = { x: 3, y: 2 };
+
+  it('draws STAIRS_GLYPH on a visible stairs tile, distinct from floor', () => {
+    const render = tileRender({
+      ...base,
+      visible: true,
+      explored: true,
+      pos: STAIRS,
+      stairs: STAIRS,
+    });
+
+    expect(render.glyph).toBe(STAIRS_GLYPH);
+    expect(render.glyph).not.toBe(FLOOR_GLYPH);
+  });
+
+  it('does not draw stairs on a visible non-stairs tile', () => {
+    const elsewhere = tileRender({
+      ...base,
+      visible: true,
+      explored: true,
+      pos: { x: STAIRS.x + 1, y: STAIRS.y },
+      stairs: STAIRS,
+    });
+
+    expect(elsewhere.glyph).toBe(FLOOR_GLYPH);
+  });
+
+  it('shows flat terrain on an explored-but-not-visible stairs tile', () => {
+    const remembered = tileRender({
+      ...base,
+      visible: false,
+      explored: true,
+      pos: STAIRS,
+      stairs: STAIRS,
+    });
+
+    // The explored-but-not-visible rule governs stairs too.
+    expect(remembered.glyph).toBe(FLOOR_GLYPH);
+    expect(remembered.glyph).not.toBe(STAIRS_GLYPH);
+  });
+
+  it('reveals nothing on an unseen stairs tile', () => {
+    const unseen = tileRender({
+      ...base,
+      visible: false,
+      explored: false,
+      pos: STAIRS,
+      stairs: STAIRS,
+    });
+
+    expect(unseen.glyph).toBe(UNSEEN_GLYPH);
+  });
+
+  it('prefers a visible occupant over the stairs glyph on a shared tile', () => {
+    const item = pack.pack.items[0];
+    const render = tileRender({
+      ...base,
+      visible: true,
+      explored: true,
+      entity: entity(item.id, STAIRS),
+      pos: STAIRS,
+      stairs: STAIRS,
+    });
+
+    expect(render.glyph).toBe(item.glyph);
+    expect(render.glyph).not.toBe(STAIRS_GLYPH);
+  });
+});
+
+describe('isTerminal (change core-gameplay-loop, task 9.1)', () => {
+  it('is false while the run is playing', () => {
+    expect(isTerminal('playing')).toBe(false);
+  });
+
+  it('is true once the run is dead', () => {
+    expect(isTerminal('dead')).toBe(true);
   });
 });

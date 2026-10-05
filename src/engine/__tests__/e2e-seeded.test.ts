@@ -1,20 +1,23 @@
 /**
- * End-to-end seeded test (task 5.1).
+ * End-to-end seeded test (task 5.1; extended by task 10.2).
  *
- * This is the first test that exercises the *whole* public engine surface in a
- * single scenario rather than probing one module in isolation:
+ * This test exercises the *whole* public engine surface in a single scenario
+ * rather than probing one module in isolation:
  *
  *   build grid -> fixed command sequence -> full event stream + final state
  *
- * It proves three things the Phase 3 unit tests each only cover in fragments:
+ * It proves, in two scenarios:
  *
- *   1. Full-run determinism: the same seed + the same command sequence produce
- *      an identical event stream and an identical final state.
- *   2. Lossless save/replay: serializing the mid-run state *and* the command log
- *      to JSON, then deserializing and replaying the remaining commands,
- *      reproduces the uninterrupted run's event stream and final state exactly.
- *   3. A mixed stream of successful `move`s and refused (`blocked`) `move`s —
- *      plus a `noop` from an unknown command type — stays JSON-clean end-to-end.
+ *   A. **Content-free movement** (the original task-5.1 scenario): the same seed
+ *      + the same `move`/`noop` sequence produce an identical event stream and
+ *      final state, the state is JSON-clean, and a serialize-the-mid-run-state +
+ *      remaining-log resume reproduces the uninterrupted run exactly.
+ *
+ *   B. **Monster AI + combat + save/load** (task 10.2): a pinned-seed run with a
+ *      real pack where a monster acts (attacks the player), the player kills it
+ *      (a `death`), and a save taken mid-run then resumed by replaying only the
+ *      unapplied remainder reproduces the uninterrupted run exactly — including
+ *      the loud rejection of an unknown `SAVE_VERSION`.
  *
  * Everything is imported from the public surface (`@engine`), matching the
  * "consumers import the barrel, never a deep module" rule from task 4.4.
@@ -23,15 +26,24 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyCommand,
+  applyCommandWithPack,
   createGrid,
   createRng,
+  deserializeSave,
+  loadPack,
+  MELEE_DAMAGE_KIND,
   rngFromState,
   rngToState,
+  resumeRun,
+  SAVE_VERSION,
+  serializeSave,
+  UnknownSaveVersionError,
 } from '@engine/index';
 import type {
   Command,
   GameEvent,
   GameState,
+  LoadedPack,
   Position,
 } from '@engine/index';
 
@@ -45,40 +57,42 @@ const SEED = 0xc0ffee;
 const at = (x: number, y: number): Position => ({ x, y });
 
 /**
- * A 4x4 world with a wall row at y=1 and a wall column at x=3.
+ * A 4x4 world with a wall row at y=1 and a wall column at x=3, plus a wall tile
+ * at (1, 0).
  *
  *        x=0    x=1    x=2    x=3
- *   y=0   .      .      .      #
+ *   y=0   .      #      .      #
  *   y=1   #      #      #      #
  *   y=2   .      .      .      #
  *   y=3   .      .      .      #
  *
- * Player starts at (0, 0); a rock occupies (1, 0), blocking the only eastward
- * step from the start tile. This guarantees a mix of successful and refused
- * steps without relying on randomness at all.
+ * Player starts at (0, 0); the wall at (1, 0) blocks the only eastward step from
+ * the start tile. This guarantees a mix of successful and refused steps without
+ * relying on randomness at all. (The former `rock` occupant became a wall tile:
+ * after bump-to-attack, a living occupant would be attacked rather than blocking,
+ * so terrain is the honest fixture for a `blocked` assertion — task 5.2.)
  */
 function createScenarioGrid() {
   return createGrid([
-    [true, true, true, false],
+    [true, false, true, false],
     [false, false, false, false],
     [true, true, true, false],
     [true, true, true, false],
   ]);
 }
 
-/** The immutable starting state for a run: grid + player + rock, empty log. */
+/** The immutable starting state for a run: grid + player, empty log. */
 function createInitialState(): GameState {
   const rng = createRng(SEED);
   const grid = createScenarioGrid();
   return {
     grid,
-    level: { depth: 1, spawn: at(0, 0) },
+    level: { depth: 1, spawn: at(0, 0), stairs: at(2, 3) },
     explored: new Array<boolean>(grid.width * grid.height).fill(false),
-    entities: [
-      { id: 'player', kind: 'player', pos: at(0, 0) },
-      { id: 'rock', kind: 'rock', pos: at(1, 0) },
-    ],
+    entities: [{ id: 'player', kind: 'player', pos: at(0, 0) }],
     playerId: 'player',
+    status: 'playing',
+    carriedItemIds: [],
     rng: rngToState(SEED, rng),
     events: [],
   };
@@ -90,13 +104,13 @@ function createInitialState(): GameState {
  * the log stay consistent?" e2e: nothing moves, yet the append-only log must
  * still grow by exactly one event per command and replay must reproduce it.
  *
- * With the player at (0, 0) and the rock at (1, 0), step by step:
+ * With the player at (0, 0) and the wall tile at (1, 0), step by step:
  *
- *   1. move east  -> blocked (rock occupies (1, 0))
+ *   1. move east  -> blocked (wall tile (1, 0))
  *   2. move south -> blocked (wall row y=1)
  *   3. move west  -> blocked (x=-1 out of bounds)
  *   4. move north -> blocked (y=-1 out of bounds)
- *   5. move east  -> blocked (rock, still at (1, 0))
+ *   5. move east  -> blocked (wall tile, still at (1, 0))
  *   6. move south -> blocked (wall row y=1)
  *   7. teleport   -> noop    (unknown command, state unchanged)
  */
@@ -114,8 +128,8 @@ const BLOCKED_SEQUENCE: Command[] = [
  * Full mixed sequence used by the e2e: five refusals + one `noop`, then real
  * movement after the player is relocated onto open floor (see `runMixed`).
  *
- * Commands 0–4 run from the start tile (0, 0) with the rock at (1, 0):
- *   0. move east  -> blocked (rock)
+ * Commands 0–4 run from the start tile (0, 0) with the wall at (1, 0):
+ *   0. move east  -> blocked (wall tile (1,0))
  *   1. move south -> blocked (wall row y=1)
  *   2. move west  -> blocked (out of bounds x=-1)
  *   3. move north -> blocked (out of bounds y=-1)
@@ -135,7 +149,7 @@ const BLOCKED_SEQUENCE: Command[] = [
  * checks the final player tile, rather than hand-encoding every intermediate.
  */
 const MIXED_SEQUENCE: Command[] = [
-  { type: 'move', direction: 'east' }, // blocked by rock at (1,0)
+  { type: 'move', direction: 'east' }, // blocked by wall at (1,0)
   { type: 'move', direction: 'south' }, // blocked by wall row y=1
   { type: 'move', direction: 'west' }, // blocked out of bounds
   { type: 'move', direction: 'north' }, // blocked out of bounds
@@ -193,7 +207,7 @@ function runMixed(): GameState {
 
 /** Expected event type per command index for the mixed scenario above. */
 const EXPECTED_TYPES: GameEvent['type'][] = [
-  'blocked', // east  (rock)
+  'blocked', // east  (wall tile)
   'blocked', // south (wall)
   'blocked', // west  (oob)
   'blocked', // north (oob)
@@ -236,10 +250,9 @@ describe('end-to-end seeded run', () => {
     expect(
       replayed.entities.find((entity) => entity.id === 'player')?.pos,
     ).toEqual(at(0, 2));
-    // The rock never moved (no engine-supported push in M1).
-    expect(
-      replayed.entities.find((entity) => entity.id === 'rock')?.pos,
-    ).toEqual(at(1, 0));
+    // The player is the only entity: the blocking tile is terrain, not a rock.
+    expect(replayed.entities).toHaveLength(1);
+    expect(replayed.entities[0].id).toBe('player');
   });
 
   it('is a pure JSON value: the whole run round-trips without loss', () => {
@@ -293,12 +306,14 @@ describe('end-to-end seeded run', () => {
     expect(resumedFinal.grid).toEqual(reference.grid);
   });
 
-  it('carries the originating seed verbatim through a full run', () => {
-    // M1 `move` resolution is deterministic and seed-independent: no branch
-    // draws from the RNG, so for the same command count the state's rng *state*
-    // advances identically regardless of seed, and the event stream is likewise
-    // seed-independent. What the seed field must do is survive the whole run
-    // unchanged — this asserts the seed is never silently reset or re-seeded.
+  it('preserves the originating seed verbatim through a full run', () => {
+    // Every command here is content-free and no monsters are present, so `move`
+    // resolution draws nothing. What the seed field must do is survive the whole
+    // run unchanged — this asserts the seed is never silently reset or
+    // re-seeded. It deliberately does NOT compare the cross-seed event streams:
+    // once monsters act (and any combat draw happens), the stream becomes a
+    // function of the seed, so event-equality across seeds is not a valid claim
+    // (task 5.2 rewrite).
     const runA = runMixed();
 
     const otherSeed = SEED + 1;
@@ -316,9 +331,11 @@ describe('end-to-end seeded run', () => {
     };
     const runB = replay(relocated, MIXED_SEQUENCE.slice(5));
 
+    // Seed survival/preservation only.
     expect(runB.rng.seed).toBe(otherSeed);
     expect(runA.rng.seed).toBe(SEED);
-    expect(runB.events).toEqual(runA.events);
+    // The seed survives every command in the log, including the noop.
+    expect(runB.events.map((event) => event.type)).toEqual(EXPECTED_TYPES);
   });
 });
 
@@ -346,5 +363,270 @@ describe('end-to-end seeded run (all-refusals variant)', () => {
     expect(
       reference.entities.find((entity) => entity.id === 'player')?.pos,
     ).toEqual(at(0, 0));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 10.2 — seeded monster AI + combat + save/load end-to-end
+// ---------------------------------------------------------------------------
+
+/**
+ * A pack with one chase monster (3 HP) and one deterministic heal item. The
+ * monster's copied `attack` is 1 and the hero's is 10, so an adjacent fight is
+ * decided in the player's favour within a couple of turns — giving a
+ * deterministic *monster acts* + *player kill* run without depending on a damage
+ * roll's outcome (the kill is guaranteed).
+ */
+function combatPack(): LoadedPack {
+  return loadPack({
+    id: 'e2e-combat-pack',
+    name: 'E2E Combat Pack',
+    version: 2,
+    classes: [
+      { id: 'hero', name: 'Hero', glyph: '@', hp: 20, attack: 10 },
+      { id: 'sage', name: 'Sage', glyph: 'S', hp: 8, attack: 3 },
+    ],
+    monsters: [
+      { id: 'slime', name: 'Slime', glyph: 's', hp: 3, behavior: 'chase', attack: 1 },
+    ],
+    items: [
+      { id: 'potion', name: 'Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
+    ],
+  });
+}
+
+/** The pinned seed shared by the combat run, its replay, and its resume. */
+const COMBAT_SEED = 0xc0ffee;
+
+/**
+ * A 6x6 open room. The player starts at (0, 0) with the pack class's HP/attack;
+ * a chase monster sits at (2, 0) (two tiles east, in sight); a potion lies at
+ * (1, 0) between them; the stairs are at (5, 5).
+ *
+ * Layout (all open floor):
+ *
+ *        x=0     x=1     x=2     ...
+ *   y=0   player  potion  slime
+ *   y=5                                   stairs
+ *
+ * The potion *between* the player and the monster is deliberate: stepping east
+ * onto it puts the player adjacent to the monster, so the monster acts (attacks)
+ * on the very same turn — the first evidence of the per-turn AI step.
+ */
+function createCombatState(pack: LoadedPack): GameState {
+  const rng = createRng(COMBAT_SEED);
+  const grid = createGrid(Array.from({ length: 6 }, () => Array(6).fill(true)));
+  const hero = pack.class('hero');
+  return {
+    grid,
+    level: { depth: 1, spawn: at(0, 0), stairs: at(5, 5) },
+    explored: new Array<boolean>(grid.width * grid.height).fill(false),
+    entities: [
+      {
+        id: 'player',
+        kind: 'hero',
+        pos: at(0, 0),
+        hp: hero.hp,
+        attack: hero.attack,
+      },
+      {
+        id: 'slime',
+        kind: 'slime',
+        pos: at(2, 0),
+        hp: 3,
+        behavior: 'chase',
+        attack: 1,
+      },
+      { id: 'item-0', kind: 'potion', pos: at(1, 0), item: true },
+    ],
+    playerId: 'player',
+    status: 'playing',
+    carriedItemIds: [],
+    rng: rngToState(COMBAT_SEED, rng),
+    events: [],
+  };
+}
+
+/**
+ * The combat command sequence. With the player at (0, 0) and the monster at
+ * (2, 0), step by step (each successful gameplay command advances the monster
+ * per D5):
+ *
+ *   0. move east  -> moved (0,0)->(1,0) onto the potion; monster adjacent
+ *                    (2,0) attacks -> attacked(slime -> player)
+ *   1. pickup     -> item-picked-up; monster attacks again -> attacked(slime)
+ *   2. attack east-> attacked(player -> slime, 10); `death` removes the monster
+ *   3. attack east-> noop (nothing-to-attack: the monster is gone)
+ *   4. move south -> moved (1,0)->(1,1)
+ *
+ * The monster acts at commands 0 and 1; command 2 is the kill; command 3 proves
+ * the kill is real (the target is gone). Split at 2 replays the kill on resume.
+ */
+const COMBAT_SEQUENCE: Command[] = [
+  { type: 'move', direction: 'east' },
+  { type: 'pickup' },
+  { type: 'attack', direction: 'east' },
+  { type: 'attack', direction: 'east' },
+  { type: 'move', direction: 'south' },
+];
+
+/** The event type per command index for the combat scenario above. */
+const COMBAT_EXPECTED_TYPES: GameEvent['type'][] = [
+  'moved', // east: step onto the potion, monster attacks
+  'attacked', // monster's attack on the move turn
+  'item-picked-up', // pickup
+  'attacked', // monster's attack on the pickup turn
+  'attacked', // player's killing blow
+  'death', // the monster is removed
+  'noop', // attack east with nothing there
+  'moved', // south
+];
+
+/**
+ * Runs the combat scenario end-to-end through the **pack-aware** entry point,
+ * resuming the RNG from each running state exactly as a live client does.
+ */
+function runCombat(
+  pack: LoadedPack,
+  commands: Command[] = COMBAT_SEQUENCE,
+  start: GameState = createCombatState(pack),
+): GameState {
+  let state = start;
+  for (const command of commands) {
+    state = applyCommandWithPack(
+      state,
+      command,
+      rngFromState(state.rng),
+      pack,
+    ).state;
+  }
+  return state;
+}
+
+describe('end-to-end seeded combat run (task 10.2)', () => {
+  it('reproduces monster acts and a kill from a pinned seed', () => {
+    const pack = combatPack();
+    const run = runCombat(pack);
+
+    // The full stream, exactly.
+    expect(run.events.map((event) => event.type)).toEqual(COMBAT_EXPECTED_TYPES);
+
+    // A monster acted: at least one attack whose attacker is the monster and
+    // whose target is the player.
+    const monsterAttacks = run.events.filter(
+      (event) =>
+        event.type === 'attacked' &&
+        event.attackerId === 'slime' &&
+        event.targetId === 'player',
+    );
+    expect(monsterAttacks.length).toBeGreaterThanOrEqual(1);
+    // Damage is reported with the exported damage-kind constant, never a literal.
+    expect(
+      monsterAttacks.every((event) =>
+        event.type === 'attacked' ? event.kind === MELEE_DAMAGE_KIND : false,
+      ),
+    ).toBe(true);
+
+    // A kill happened: a `death` for the monster, which is then gone.
+    expect(run.events.some((event) => event.type === 'death')).toBe(true);
+    expect(run.entities.some((entity) => entity.id === 'slime')).toBe(false);
+
+    // The player survived the fight and the run is still live.
+    expect(run.status).toBe('playing');
+    const player = run.entities.find((entity) => entity.id === 'player');
+    expect(player?.hp).toBeLessThan(20);
+    expect(player?.pos).toEqual(at(1, 1));
+
+    // The picked-up potion was carried (content-as-data: an id, not an entry).
+    expect(run.carriedItemIds).toEqual(['potion']);
+  });
+
+  it('is deterministic: the same seed reproduces the same stream and state', () => {
+    const pack = combatPack();
+    const reference = runCombat(pack);
+    const replayed = runCombat(pack);
+
+    expect(replayed.events).toEqual(reference.events);
+    expect(replayed).toEqual(reference);
+  });
+
+  it('resumes a mid-run save by replaying only the remainder, exactly', () => {
+    const pack = combatPack();
+    const reference = runCombat(pack);
+
+    // Take the save after the pickup and the monster's two attacks — the monster
+    // is still alive at the split, so the remainder contains the kill.
+    const SPLIT = 2;
+    const midRun = runCombat(pack, COMBAT_SEQUENCE.slice(0, SPLIT));
+    expect(midRun.entities.some((entity) => entity.id === 'slime')).toBe(true);
+
+    // A mid-run save: full current state + full log + appliedCount < length.
+    const save = serializeSave(midRun, COMBAT_SEQUENCE, SPLIT);
+    const envelope = deserializeSave(save);
+    expect(envelope.version).toBe(SAVE_VERSION);
+    expect(envelope.appliedCount).toBe(SPLIT);
+    expect(envelope.appliedCount).toBeLessThan(COMBAT_SEQUENCE.length);
+
+    // Resume replays only `commands.slice(SPLIT)` from the saved state.
+    const resumed = resumeRun(save, pack);
+
+    // The resumed run matches the uninterrupted reference run exactly.
+    expect(resumed.events).toEqual(reference.events);
+    expect(resumed).toEqual(reference);
+    expect(resumed.events.map((event) => event.type)).toEqual(
+      COMBAT_EXPECTED_TYPES,
+    );
+    expect(resumed.entities).toEqual(reference.entities);
+    expect(resumed.rng).toEqual(reference.rng);
+    expect(resumed.carriedItemIds).toEqual(reference.carriedItemIds);
+    expect(resumed.status).toBe(reference.status);
+  });
+
+  it('rejects an unknown SAVE_VERSION loudly, naming the version', () => {
+    const pack = combatPack();
+    const midRun = runCombat(pack, COMBAT_SEQUENCE.slice(0, 2));
+    const parsed = JSON.parse(
+      serializeSave(midRun, COMBAT_SEQUENCE, 2),
+    ) as { version: number };
+
+    // A save from a future format must not be mis-parsed as a valid run.
+    parsed.version = 999;
+    let caught: unknown;
+    try {
+      deserializeSave(JSON.stringify(parsed));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnknownSaveVersionError);
+    const err = caught as UnknownSaveVersionError;
+    expect(err.version).toBe(999);
+    expect(err.supported).toBe(SAVE_VERSION);
+    expect(err.message).toContain('999');
+    expect(err.message).toContain(String(SAVE_VERSION));
+  });
+
+  it('carries the originating seed verbatim (seed survival, not stream equality)', () => {
+    // Every command here draws through the shared RNG (a monster attack does,
+    // once adjacent), so the event stream is a function of the seed — event
+    // equality across *different* seeds is NOT a valid claim. What must hold is
+    // that the originating seed is never silently reset or re-seeded.
+    const pack = combatPack();
+    const runA = runCombat(pack);
+    expect(runA.rng.seed).toBe(COMBAT_SEED);
+
+    const otherSeed = COMBAT_SEED + 1;
+    const otherRng = createRng(otherSeed);
+    const different: GameState = {
+      ...createCombatState(pack),
+      rng: rngToState(otherSeed, otherRng),
+    };
+    const runB = runCombat(pack, COMBAT_SEQUENCE, different);
+
+    expect(runB.rng.seed).toBe(otherSeed);
+    expect(runA.rng.seed).toBe(COMBAT_SEED);
+    // The seed survives every command in the log, including the kill and noop.
+    expect(runB.events.map((event) => event.type)).toEqual(
+      COMBAT_EXPECTED_TYPES,
+    );
   });
 });

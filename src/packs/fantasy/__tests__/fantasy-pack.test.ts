@@ -37,6 +37,7 @@ describe('fantasy pack — schema + composition', () => {
     expect(fighter.name).toBe('Fighter');
     expect(fighter.glyph).toBe('@');
     expect(fighter.hp).toBeGreaterThan(0);
+    expect(fighter.attack).toBeGreaterThan(0);
   });
 
   it('resolves a known monster id', () => {
@@ -45,6 +46,23 @@ describe('fantasy pack — schema + composition', () => {
     expect(goblin.name).toBe('Goblin');
     expect(goblin.glyph).toBe('g');
     expect(goblin.hp).toBeGreaterThan(0);
+    expect(goblin.behavior.length).toBeGreaterThan(0);
+    expect(goblin.attack).toBeGreaterThan(0);
+  });
+
+  it('every monster declares a behavior id and positive attack', () => {
+    const loaded = loadPack(fantasyPack);
+    for (const monster of loaded.pack.monsters) {
+      expect(monster.behavior.length).toBeGreaterThan(0);
+      expect(monster.attack).toBeGreaterThan(0);
+    }
+  });
+
+  it('every class declares a positive attack', () => {
+    const loaded = loadPack(fantasyPack);
+    for (const cls of loaded.pack.classes) {
+      expect(cls.attack).toBeGreaterThan(0);
+    }
   });
 
   it('resolves a known item id', () => {

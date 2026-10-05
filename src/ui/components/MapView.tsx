@@ -65,6 +65,8 @@ export function MapView() {
           visible: visible[index] === true,
           explored: state.explored[index] === true,
           entity,
+          pos,
+          stairs: state.level.stairs,
           pack,
           isPlayer: entity !== undefined && entity.id === state.playerId,
         }),

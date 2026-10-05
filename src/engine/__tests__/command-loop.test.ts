@@ -2,16 +2,38 @@ import { describe, it, expect } from 'vitest';
 import {
   appendEvents,
   applyCommand,
+  applyCommandWithPack,
   blocked,
   createGrid,
   createRng,
   entityAt,
+  entityById,
+  loadPack,
   moved,
   noop,
   rngFromState,
 } from '../index';
 import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from '../fov';
-import type { Command, GameEvent, GameState, Position } from '../index';
+import type { Command, GameEvent, GameState, LoadedPack, Position } from '../index';
+
+/** A minimal valid pack used by the descent-population assertion (task 7.2). */
+function testPack(): LoadedPack {
+  return loadPack({
+    id: 'command-loop-test-pack',
+    name: 'Command Loop Test Pack',
+    version: 2,
+    classes: [
+      { id: 'fighter', name: 'Fighter', glyph: '@', hp: 10, attack: 4 },
+      { id: 'rogue', name: 'Rogue', glyph: 'r', hp: 8, attack: 3 },
+    ],
+    monsters: [
+      { id: 'slime', name: 'Slime', glyph: 's', hp: 2, behavior: 'chase', attack: 1 },
+    ],
+    items: [
+      { id: 'potion', name: 'Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
+    ],
+  });
+}
 
 /**
  * Test fixture: a 3x3 grid with a wall column at x=1.
@@ -20,7 +42,9 @@ import type { Command, GameEvent, GameState, Position } from '../index';
  *   y=1:  . # .
  *   y=2:  . # .
  *
- * Player starts at (0, 0); a rock occupies (2, 0).
+ * Player starts at (0, 0). By default there is no other entity: the wall column
+ * at x=1 is the blocking terrain, so an eastward move is `blocked` by
+ * passability (not by an occupant). Tests that need an occupant pass one in.
  */
 function makeState(entities?: GameState['entities']): GameState {
   const grid = createGrid([
@@ -31,13 +55,14 @@ function makeState(entities?: GameState['entities']): GameState {
   const rng = createRng(1234);
   return {
     grid,
-    level: { depth: 1, spawn: { x: 0, y: 0 } },
+    level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 2, y: 2 } },
     explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: entities ?? [
       { id: 'player', kind: 'player', pos: { x: 0, y: 0 } },
-      { id: 'rock', kind: 'rock', pos: { x: 2, y: 0 } },
     ],
     playerId: 'player',
+    status: 'playing',
+    carriedItemIds: [],
     rng: { seed: 1234, state: rng.state() },
     events: [],
   };
@@ -322,10 +347,12 @@ describe('move resolution', () => {
       const rng = createRng(1234);
       const state: GameState = {
         grid: openGrid,
-        level: { depth: 1, spawn: at(1, 1) },
+        level: { depth: 1, spawn: at(1, 1), stairs: at(2, 2) },
         explored: new Array<boolean>(openGrid.width * openGrid.height).fill(false),
         entities: [{ id: 'player', kind: 'player', pos: at(1, 1) }],
         playerId: 'player',
+        status: 'playing',
+        carriedItemIds: [],
         rng: { seed: 1234, state: rng.state() },
         events: [],
       };
@@ -361,8 +388,10 @@ describe('move resolution', () => {
     expect(west.state.entities.find((e) => e.id === 'player')?.pos).toEqual(at(0, 0));
   });
 
-  it('move into a tile occupied by a blocking entity is blocked', () => {
-    // Fully passable grid so the block is attributable to the occupant, not a wall.
+  it('move into a tile occupied by another non-living occupant is blocked', () => {
+    // Fully passable grid so the block is attributable to the occupant, not a
+    // wall. A `rock` (no hp, no item discriminator) is the catch-all third class
+    // (design D4): neither attack target nor feature, so the step is refused.
     const openGrid = createGrid([
       [true, true, true],
       [true, true, true],
@@ -371,13 +400,15 @@ describe('move resolution', () => {
     const rng = createRng(1234);
     const state: GameState = {
       grid: openGrid,
-      level: { depth: 1, spawn: at(0, 1) },
+      level: { depth: 1, spawn: at(0, 1), stairs: at(2, 2) },
       explored: new Array<boolean>(openGrid.width * openGrid.height).fill(false),
       entities: [
         { id: 'player', kind: 'player', pos: at(0, 1) },
         { id: 'rock', kind: 'rock', pos: at(1, 1) },
       ],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: { seed: 1234, state: rng.state() },
       events: [],
     };
@@ -416,6 +447,309 @@ describe('move resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 5.2 — bump-to-attack (move into a living occupant)
+// ---------------------------------------------------------------------------
+
+describe('bump-to-attack', () => {
+  /** A fully passable 3x3 room; the player at (0,1) with a monster east at (1,1). */
+  function bumpState(monsterAttack = 4): GameState {
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(1234);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(0, 1), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(0, 1), hp: 10, attack: monsterAttack },
+        { id: 'goblin', kind: 'goblin', pos: at(1, 1), hp: 5 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 1234, state: rng.state() },
+      events: [],
+    };
+  }
+
+  it('walking into a living monster attacks it instead of moving', () => {
+    const state = bumpState();
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+
+    // The player attacks (an `attacked` event from player -> goblin)...
+    expect(events[0]?.type).toBe('attacked');
+    const attacked = events[0] as { attackerId: string; targetId: string };
+    expect(attacked.attackerId).toBe('player');
+    expect(attacked.targetId).toBe('goblin');
+    // ...does NOT move onto the occupied tile...
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(0, 1));
+    expect(entityAt(next.entities, at(1, 1))?.id).toBe('goblin');
+    // ...and the goblin's HP dropped.
+    const goblin = entityAt(next.entities, at(1, 1));
+    expect(typeof goblin?.hp).toBe('number');
+    expect((goblin?.hp as number) < 5).toBe(true);
+  });
+
+  it('a killing bump removes the monster and emits death', () => {
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(1);
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: at(0, 1), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(0, 1), hp: 10, attack: 9 },
+        { id: 'goblin', kind: 'goblin', pos: at(1, 1), hp: 1 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 1, state: rng.state() },
+      events: [],
+    };
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events.map((e) => e.type)).toEqual(['attacked', 'death']);
+    expect(entityById(next.entities, 'goblin')).toBeUndefined();
+    expect(entityAt(next.entities, at(1, 1))).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5.2 — feature tiles are enterable; walls still block
+// ---------------------------------------------------------------------------
+
+describe('feature tiles are enterable', () => {
+  it('moving onto a floor item (item discriminator) succeeds', () => {
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(7);
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: at(0, 1), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(0, 1) },
+        { id: 'potion', kind: 'healing-potion', pos: at(1, 1), item: true },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 7, state: rng.state() },
+      events: [],
+    };
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events[0]).toEqual(moved('player', at(0, 1), at(1, 1)));
+    // The player stands on the item tile (the item is not removed by movement).
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+    expect(entityById(next.entities, 'potion')?.pos).toEqual(at(1, 1));
+  });
+
+  it('moving onto the stairs tile succeeds', () => {
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(7);
+    const state: GameState = {
+      grid,
+      // Stairs at (1,1), directly east of the player.
+      level: { depth: 1, spawn: at(0, 1), stairs: at(1, 1) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [{ id: 'player', kind: 'fighter', pos: at(0, 1) }],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 7, state: rng.state() },
+      events: [],
+    };
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events[0]).toEqual(moved('player', at(0, 1), at(1, 1)));
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+  });
+
+  it('a wall tile (non-passable) still blocks even with no occupant', () => {
+    const state = makeState();
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events).toEqual([blocked('player', 'east')]);
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(0, 0));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5.2 — explicit attack command
+// ---------------------------------------------------------------------------
+
+describe('explicit attack command', () => {
+  function openState(entities: GameState['entities']): GameState {
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(11);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(1, 1), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities,
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 11, state: rng.state() },
+      events: [],
+    };
+  }
+
+  it('attacking a living monster deals damage and emits an attacked event', () => {
+    const state = openState([
+      { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 },
+      { id: 'goblin', kind: 'goblin', pos: at(2, 1), hp: 5 },
+    ]);
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'attack', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events[0]?.type).toBe('attacked');
+    const goblin = entityById(next.entities, 'goblin');
+    expect((goblin?.hp as number) < 5).toBe(true);
+    // The attacker does not move.
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+  });
+
+  it('attacking empty space is a noop and does not move the player', () => {
+    const state = openState([{ id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 }]);
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'attack', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events).toEqual([noop('nothing-to-attack')]);
+    expect(next.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+  });
+
+  it('attacking a wall / out of bounds is a noop', () => {
+    const wallState = openState([{ id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 }]);
+    const outOfBounds = openState([{ id: 'player', kind: 'fighter', pos: at(0, 0), hp: 10, attack: 4 }]);
+    const north = applyCommand(outOfBounds, { type: 'attack', direction: 'north' }, rngFromState(outOfBounds.rng));
+    expect(north.events).toEqual([noop('nothing-to-attack')]);
+    expect(wallState.entities).toHaveLength(1);
+  });
+
+  it('attacking a non-living occupant (a rock) is a noop', () => {
+    const state = openState([
+      { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 },
+      { id: 'rock', kind: 'rock', pos: at(2, 1) },
+    ]);
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'attack', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events).toEqual([noop('nothing-to-attack')]);
+    expect(entityAt(next.entities, at(2, 1))?.id).toBe('rock');
+  });
+
+  it('a malformed attack (missing or unknown direction) is a single noop', () => {
+    const missing = applyCommand(
+      openState([{ id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 }]),
+      { type: 'attack' } as unknown as Command,
+      createRng(1),
+    );
+    expect(missing.events).toEqual([noop('malformed-command')]);
+
+    const unknown = applyCommand(
+      openState([{ id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 }]),
+      { type: 'attack', direction: 'northwest' } as unknown as Command,
+      createRng(1),
+    );
+    expect(unknown.events).toEqual([noop('malformed-command')]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6.1 — pickup command (Phase 6 real implementation)
+// ---------------------------------------------------------------------------
+
+describe('pickup command handling', () => {
+  it('a malformed pickup (extra params) degrades to malformed-command', () => {
+    const before = makeState();
+    const { state, events } = applyCommand(
+      before,
+      { type: 'pickup', itemId: 'potion' } as unknown as Command,
+      rngFromState(before.rng),
+    );
+    expect(events).toEqual([noop('malformed-command')]);
+    // World state equivalent to the input.
+    expect(state.entities).toEqual(before.entities);
+    expect(state.rng).toEqual(before.rng);
+  });
+
+  it('a well-formed pickup on an empty tile is a nothing-to-pick-up noop', () => {
+    const before = makeState();
+    const { state, events } = applyCommand(
+      before,
+      { type: 'pickup' },
+      rngFromState(before.rng),
+    );
+    expect(events).toEqual([noop('nothing-to-pick-up')]);
+    expect(state.entities).toEqual(before.entities);
+    expect(state.carriedItemIds).toEqual([]);
+  });
+
+  it('picks up a floor item on the player tile and carries its kind', () => {
+    const before = makeState([
+      { id: 'player', kind: 'player', pos: { x: 0, y: 0 } },
+      { id: 'item-0', kind: 'potion', pos: { x: 0, y: 0 }, item: true },
+    ]);
+    const { state, events } = applyCommand(
+      before,
+      { type: 'pickup' },
+      rngFromState(before.rng),
+    );
+    expect(events).toEqual([
+      { type: 'item-picked-up', actorId: 'player', itemId: 'potion', entityId: 'item-0' },
+    ]);
+    expect(state.entities.some((e) => e.id === 'item-0')).toBe(false);
+    expect(state.carriedItemIds).toEqual(['potion']);
+    // Pickup success advances the turn step (no monsters here, so events are
+    // unchanged), and the input is not mutated.
+    expect(state.events).toEqual(before.events.concat(events));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // explored-on-move (change `levelgen-and-fov`, task 4.3)
 // ---------------------------------------------------------------------------
 
@@ -428,10 +762,12 @@ describe('movement updates the explored mask', () => {
     const rng = createRng(99);
     return {
       grid,
-      level: { depth: 1, spawn: at(2, 2) },
+      level: { depth: 1, spawn: at(2, 2), stairs: at(4, 4) },
       explored: new Array<boolean>(grid.width * grid.height).fill(false),
       entities: [{ id: 'player', kind: 'player', pos: at(2, 2) }],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: { seed: 99, state: rng.state() },
       events: [],
     };
@@ -611,5 +947,255 @@ describe('JSON round-trip of a produced state', () => {
 
     expect(fromRoundTripped.events).toEqual(fromOriginal.events);
     expect(fromRoundTripped.state).toEqual(fromOriginal.state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5.3 — turn matrix + permadeath (design D5)
+// ---------------------------------------------------------------------------
+
+describe('turn step: monsters advance per the D5 outcome matrix', () => {
+  /**
+   * A wide open room with the player at (1,1) and a `chase` monster several
+   * tiles away at (1,6) (within `DEFAULT_BEHAVIOR_RANGE` 8, so it always acts).
+   * The monster is a genuine mid-range entity, so a monster `moved` event is
+   * observable and attributable.
+   */
+  function chaseState(): GameState {
+    const grid = createGrid(
+      Array.from({ length: 8 }, () => new Array<boolean>(8).fill(true)),
+    );
+    const rng = createRng(0x5eed);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(1, 1), stairs: at(7, 7) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 20, attack: 4 },
+        { id: 'goblin', kind: 'goblin', pos: at(1, 6), hp: 5, behavior: 'chase', attack: 2 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 0x5eed, state: rng.state() },
+      events: [],
+    };
+  }
+
+  it('a successful move advances the monster (appended after the player event)', () => {
+    const state = chaseState();
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    // Player event first, then the monster's.
+    expect(events[0]?.type).toBe('moved');
+    expect((events[0] as { entityId: string }).entityId).toBe('player');
+    expect(events.some((e) => e.type === 'moved' && (e as { entityId: string }).entityId === 'goblin')).toBe(true);
+    // The goblin actually moved one tile north toward the player.
+    expect(next.entities.find((e) => e.id === 'goblin')?.pos).toEqual(at(1, 5));
+  });
+
+  it('a blocked move does not advance the monster', () => {
+    const state = chaseState();
+    // Move the player to the top edge; north is out of bounds.
+    const atEdge: GameState = {
+      ...state,
+      entities: state.entities.map((e) =>
+        e.id === 'player' ? { ...e, pos: at(0, 0) } : e,
+      ),
+    };
+    const { events } = applyCommand(
+      atEdge,
+      { type: 'move', direction: 'north' },
+      rngFromState(atEdge.rng),
+    );
+    expect(events).toEqual([blocked('player', 'north')]);
+  });
+
+  it('a noop command does not advance the monster', () => {
+    const state = chaseState();
+    const { events } = applyCommand(
+      state,
+      { type: 'move', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events.length).toBeGreaterThan(1); // sanity: the advance happened
+    // Now a noop (out-of-bounds attack) from the same state advances nothing.
+    const noopState: GameState = {
+      ...state,
+      entities: state.entities.map((e) =>
+        e.id === 'player' ? { ...e, pos: at(0, 0) } : e,
+      ),
+    };
+    const noopResult = applyCommand(
+      noopState,
+      { type: 'attack', direction: 'north' },
+      rngFromState(noopState.rng),
+    );
+    expect(noopResult.events).toEqual([noop('nothing-to-attack')]);
+  });
+
+  it('an attack hit advances the monster', () => {
+    const state = chaseState();
+    // Place a second monster adjacent to the player so the attack hits.
+    const withTarget: GameState = {
+      ...state,
+      entities: [
+        state.entities[0],
+        { id: 'victim', kind: 'goblin', pos: at(2, 1), hp: 3 },
+        state.entities[1],
+      ],
+    };
+    const { events } = applyCommand(
+      withTarget,
+      { type: 'attack', direction: 'east' },
+      rngFromState(withTarget.rng),
+    );
+    expect(events[0]?.type).toBe('attacked');
+    // A monster act is present after the player's attack.
+    const goblinAct = events.some(
+      (e) => e.type === 'moved' && (e as { entityId: string }).entityId === 'goblin',
+    );
+    expect(goblinAct).toBe(true);
+  });
+});
+
+describe('permadeath: the run is terminal', () => {
+  function dyingState(): GameState {
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(0xdead);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(1, 1), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 1, attack: 4 },
+        { id: 'killer', kind: 'goblin', pos: at(2, 1), hp: 9, behavior: 'chase', attack: 20 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 0xdead, state: rng.state() },
+      events: [],
+    };
+  }
+
+  it('a monster killing the player sets status dead, removes the player, and emits player-died', () => {
+    const state = dyingState();
+    // The player attacks the killer (it survives with 9 hp), then the killer
+    // counter-attacks for lethal damage.
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'attack', direction: 'east' },
+      rngFromState(state.rng),
+    );
+    expect(events[events.length - 1]).toEqual({ type: 'player-died' });
+    expect(next.status).toBe('dead');
+    expect(entityById(next.entities, 'player')).toBeUndefined();
+  });
+
+  it('any gameplay command after death is a noop and advances nothing', () => {
+    const base = dyingState();
+    const dead: GameState = { ...base, status: 'dead' };
+    for (const command of [
+      { type: 'move', direction: 'south' },
+      { type: 'attack', direction: 'east' },
+      { type: 'descend' },
+      { type: 'use-item', itemId: 'potion' },
+    ] as Command[]) {
+      const { state, events } = applyCommand(dead, command, rngFromState(dead.rng));
+      expect(events).toEqual([noop('run-over')]);
+      expect(state).toEqual({ ...dead, events: [...dead.events, noop('run-over')] });
+    }
+  });
+
+  it('the turn step stops the moment the player dies mid-step', () => {
+    // Two adjacent lethal monsters and a 1-hp player: the first kills the
+    // player, so the second must not act (it stays put and emits nothing).
+    const grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(3);
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: at(1, 1), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 1, attack: 1 },
+        { id: 'killer', kind: 'goblin', pos: at(1, 0), hp: 9, behavior: 'chase', attack: 20 },
+        { id: 'bystander', kind: 'goblin', pos: at(0, 1), hp: 9, behavior: 'chase', attack: 20 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 3, state: rng.state() },
+      events: [],
+    };
+
+    // A blocked move (north is occupied by the killer? no — north of (1,1) is
+    // (1,0) which holds the killer → bump-attack). Use a move that is a real
+    // world change and gives the monsters their turn: move south.
+    const { state: next, events } = applyCommand(
+      state,
+      { type: 'move', direction: 'south' },
+      rngFromState(state.rng),
+    );
+    expect(next.status).toBe('dead');
+    // Only the first monster acted (one attacked event), then player-died.
+    const attacks = events.filter((e) => e.type === 'attacked');
+    expect(attacks).toHaveLength(1);
+    expect(events[events.length - 1]).toEqual({ type: 'player-died' });
+    // The bystander never moved.
+    expect(next.entities.find((e) => e.id === 'bystander')?.pos).toEqual(at(0, 1));
+  });
+});
+
+describe('descent does not advance the new level monsters', () => {
+  it('a successful descend places monsters that do not act that turn', () => {
+    // A hand-built small level-1 fixture with the player already on the stairs
+    // (Phase-7 gate). The pack-aware entry point populates the generated level-2,
+    // so the D5 rule can be asserted directly: `level-changed` must not be
+    // followed by any monster act even though the fresh level has monsters.
+    const grid = createGrid([
+      [true, false, true],
+      [true, false, true],
+      [true, false, true],
+    ]);
+    const rng = createRng(0x51eed);
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: at(0, 0), stairs: at(2, 2) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(2, 2), hp: 10, attack: 4 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 0x51eed, state: rng.state() },
+      events: [],
+    };
+    const descPack = testPack();
+    const { state: next, events } = applyCommandWithPack(
+      state,
+      { type: 'descend' },
+      rngFromState(state.rng),
+      descPack,
+    );
+    // Exactly the level-change event: no monster event follows on the new level.
+    expect(events).toEqual([{ type: 'level-changed', depth: 2 }]);
+    expect(next.level.depth).toBe(2);
+    // The new level is populated, proving there were monsters that *could* act.
+    expect(next.entities.some((e) => e.item !== true && e.id !== 'player')).toBe(
+      true,
+    );
   });
 });

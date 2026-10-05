@@ -92,6 +92,59 @@ export function entityById(
 }
 
 /**
+ * Returns true when `entity` is a **living** occupant: a non-item entity that
+ * carries a numeric `hp`.
+ *
+ * This is one of the three total occupancy classes (change `core-gameplay-loop`,
+ * design D4): living → attack, feature → enter, any other non-living occupant →
+ * blocked. The predicate reads only the entity's own fields, so it stays
+ * pack-free. The item discriminator takes precedence, so an item that also
+ * happens to carry an `hp` is still classified as a feature, not as living.
+ */
+export function isLiving(entity: Entity): boolean {
+  return entity.item !== true && typeof entity.hp === 'number';
+}
+
+/**
+ * Returns true when `entity` is a **feature** occupant: a floor item carrying
+ * the explicit item discriminator (`item: true`, design D1/D4).
+ *
+ * This is deliberately discriminator-only — it does **not** infer item-ness from
+ * `kind` (a pack id the content-free path cannot resolve). The stairs tile is
+ * **not** an entity and is detected separately via `isStairs(pos, stairs)`.
+ */
+export function isFeature(entity: Entity): boolean {
+  return entity.item === true;
+}
+
+/**
+ * Returns true when `pos` is the `stairs` tile (change `core-gameplay-loop`,
+ * design D4). Stairs are a `Level` position, not an entity, so this takes the
+ * `stairs` position explicitly rather than an entity — the content-free
+ * `applyMove` calls this alongside `isFeature`.
+ */
+export function isStairs(pos: Position, stairs: Position): boolean {
+  return pos.x === stairs.x && pos.y === stairs.y;
+}
+
+/**
+ * Returns the **living** entity occupying `pos`, or `undefined` if the tile is
+ * empty or holds a non-living occupant (an item, or any other non-living
+ * entity).
+ *
+ * This is the pack-free attack-target lookup used by bump-to-attack (design
+ * D2/D4): only a `isLiving` occupant is an attack target; a feature/other
+ * occupant is handled by the caller's enter/blocked branches.
+ */
+export function attackTargetAt(
+  entities: Entity[],
+  pos: Position,
+): Entity | undefined {
+  const occupant = entityAt(entities, pos);
+  return occupant !== undefined && isLiving(occupant) ? occupant : undefined;
+}
+
+/**
  * Builds a flat row-major `Grid` from a rectangular array of rows, where a
  * truthy cell means passable. Throws if the rows are ragged — a malformed grid
  * is a programmer error, not a runtime condition.

@@ -39,9 +39,9 @@ npm start         # expo start
 - Randomness is only ever drawn through the injected seeded RNG whose state travels in `GameState`. Same seed + same command sequence ⇒ identical outcome.
 - Content never lives in the engine. Content is data in `src/packs` (Stage 2+); M1 hardcodes fixtures only inside tests.
 
-## Out of Scope (through Stage 5)
+## Out of Scope (through Stage 6)
 - Engine changes driven by the client — the renderer consumes `@engine` only; determinism, framework-freedom, and content-as-data remain structural invariants.
-- Monster AI/spawning, combat, items (`use-item` UI), stairs, save/load I/O, and permadeath (Stage 6).
+- A second theme pack (Stage 7) — the abstraction-leak test.
 - Skia/canvas rendering, a camera/scrolling, animation, or audio — the fixed 40×30 glyph grid is the v1 renderer.
 - A web target (`react-native-web`/`react-dom` + web bundler) — input/web-keyboard is a dev convenience only.
 - ECS, scripting engine, event bus, or abstractions built ahead of a second use case (the Stage 7 "dogs" pack is the abstraction-leak test).
@@ -58,8 +58,8 @@ npm start         # expo start
 3. **`levelgen-and-fov`** — seeded BSP level generation + named-generator registry, recursive-shadowcasting FOV, stored explored mask, deterministic `descend`. *(complete)*
 4. **APK pipeline** — build/CI change to produce an installable Android APK. *(complete — workflow authored and locally verified; the first live `v*` tag run is the authoritative on-device check)*
 5. **`expo-glyph-renderer`** — Expo Router shell + glyph renderer + input mapping. *(complete)*
-6. `core-gameplay-loop` — AI, combat, items, stairs, permadeath, save/load. *(next)*
-7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test).
+6. **`core-gameplay-loop`** — AI, combat, items, stairs, permadeath, save/load. *(complete — seeded monster/item population, named behavior + damage registries, bump-to-attack + permadeath, pickup/use-item, stairs-gated populated descent, and a JSON-state + command-log save/load surface resumed by replaying the remainder; the UI dispatches the new commands through a game-over surface and saves/resumes via the engine save path)*
+7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test). *(next)*
 
 ---
 

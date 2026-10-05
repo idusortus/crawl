@@ -9,7 +9,8 @@ import {
   indexOf,
   isPassable,
 } from '../grid';
-import type { Entity, Grid, Position } from '../types';
+import { applyCommand, createRng, rngFromState } from '../index';
+import type { Command, Entity, GameState, Grid, Position } from '../types';
 
 /**
  * 3x2 grid, row-major. `#` = wall (not passable), `.` = floor (passable).
@@ -157,5 +158,83 @@ describe('occupancy lookup', () => {
 
   it('preserves extra plain properties on entities', () => {
     expect(entityById(entities, 'goblin-1')?.hp).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Move resolution classifies every occupant totally (change
+// `core-gameplay-loop`, task 5.2; engine/spatial-grid spec "Occupancy
+// distinguishes living entities from terrain features")
+// ---------------------------------------------------------------------------
+
+describe('move resolution: total occupancy classification', () => {
+  const at = (x: number, y: number): Position => ({ x, y });
+
+  /**
+   * A 3x3 all-passable room with the player at (1,1). The optional `occupant`
+   * is placed east at (2,1); `stairs` defaults to a far tile so it never
+   * interferes with the east step.
+   */
+  function makeState(occupant?: Entity, stairs: Position = at(0, 0)): GameState {
+    const room = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(1234);
+    return {
+      grid: room,
+      level: { depth: 1, spawn: at(1, 1), stairs },
+      explored: new Array<boolean>(room.width * room.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 10, attack: 4 },
+        ...(occupant === undefined ? [] : [occupant]),
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 1234, state: rng.state() },
+      events: [],
+    };
+  }
+
+  const east: Command = { type: 'move', direction: 'east' };
+
+  it('a living occupant is attacked, not entered', () => {
+    const state = makeState({ id: 'goblin', kind: 'goblin', pos: at(2, 1), hp: 5 });
+    const { state: next, events } = applyCommand(state, east, rngFromState(state.rng));
+    expect(events[0]?.type).toBe('attacked');
+    // The player did not move onto the monster's tile.
+    expect(entityById(next.entities, 'player')?.pos).toEqual(at(1, 1));
+    expect(entityById(next.entities, 'goblin')).toBeDefined();
+  });
+
+  it('a floor item (discriminator) is entered', () => {
+    const state = makeState({ id: 'potion', kind: 'potion', pos: at(2, 1), item: true });
+    const { state: next, events } = applyCommand(state, east, rngFromState(state.rng));
+    expect(events[0]?.type).toBe('moved');
+    expect(entityById(next.entities, 'player')?.pos).toEqual(at(2, 1));
+  });
+
+  it('a non-living, non-feature occupant is blocked', () => {
+    const state = makeState({ id: 'rock', kind: 'rock', pos: at(2, 1) });
+    const { state: next, events } = applyCommand(state, east, rngFromState(state.rng));
+    expect(events[0]?.type).toBe('blocked');
+    expect(entityById(next.entities, 'player')?.pos).toEqual(at(1, 1));
+    expect(entityAt(next.entities, at(2, 1))?.id).toBe('rock');
+  });
+
+  it('the stairs tile (no entity) is entered', () => {
+    const state = makeState(undefined, at(2, 1));
+    const { state: next, events } = applyCommand(state, east, rngFromState(state.rng));
+    expect(events[0]?.type).toBe('moved');
+    expect(entityById(next.entities, 'player')?.pos).toEqual(at(2, 1));
+  });
+
+  it('an empty tile is entered', () => {
+    const state = makeState();
+    const { state: next, events } = applyCommand(state, east, rngFromState(state.rng));
+    expect(events[0]?.type).toBe('moved');
+    expect(entityById(next.entities, 'player')?.pos).toEqual(at(2, 1));
   });
 });

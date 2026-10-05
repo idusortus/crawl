@@ -104,13 +104,22 @@ function boundaryIsSolid(grid: Grid): boolean {
 // ---------------------------------------------------------------------------
 
 describe('level generation — seeded determinism', () => {
-  it('produces an identical grid, spawn, and depth for the same seed + depth', () => {
+  it('produces an identical grid, spawn, stairs, and depth for the same seed + depth', () => {
     const first = gen(0x51eed, 40, 30, 3);
     const second = gen(0x51eed, 40, 30, 3);
     expect(second.grid).toEqual(first.grid);
     expect(second.level.spawn).toEqual(first.level.spawn);
+    expect(second.level.stairs).toEqual(first.level.stairs);
     expect(second.level.depth).toBe(first.level.depth);
     expect(second).toEqual(first);
+  });
+
+  it('draws stairs from the injected RNG: the same seed reproduces the same tile', () => {
+    for (const seed of [1, 2, 7, 42, 777, 0x51eed]) {
+      const first = gen(seed, 40, 30, 1);
+      const second = gen(seed, 40, 30, 1);
+      expect(second.level.stairs).toEqual(first.level.stairs);
+    }
   });
 
   it('derives determinism from the injected RNG (resuming its state reproduces it)', () => {
@@ -217,6 +226,20 @@ describe('level generation — spawn and depth', () => {
   it('records the requested depth', () => {
     expect(gen(5, 30, 30, 1).level.depth).toBe(1);
     expect(gen(5, 30, 30, 12).level.depth).toBe(12);
+  });
+
+  it('places stairs on a passable in-bounds tile distinct from spawn', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const { grid, level } = gen(seed, 40, 30, 4);
+      const { x, y } = level.stairs;
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThan(grid.width);
+      expect(y).toBeLessThan(grid.height);
+      expect(grid.passable[y * grid.width + x]).toBe(true);
+      // A normal-size level has many floor tiles, so stairs never equal spawn.
+      expect(level.stairs).not.toEqual(level.spawn);
+    }
   });
 });
 

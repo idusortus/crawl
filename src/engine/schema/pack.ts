@@ -16,8 +16,8 @@
 
 import { z } from 'zod';
 
-/** The only pack schema version this engine understands (design D4). */
-export const PACK_VERSION = 1;
+/** The only pack schema version this engine understands (design D4/D9). */
+export const PACK_VERSION = 2;
 
 /**
  * A render glyph: exactly one character. The `z.string()` guard first produces
@@ -60,38 +60,49 @@ export const packIdentitySchema = z.object({
 
 /**
  * A playable class. `hp` is a required stat so "missing required stat" is
- * testable; `description` is optional display text.
+ * testable; `attack` is the damage source the engine copies onto the player
+ * entity at spawn (design D2/D9); `description` is optional display text.
  */
 export const packClassSchema = z.object({
   id: z.string().min(1, 'id must be a non-empty string'),
   name: z.string().min(1, 'name must be a non-empty string'),
   glyph: glyphSchema,
   hp: z.number(),
+  attack: z.number(),
   description: z.string().optional(),
 });
 
 /**
- * A class's `hp` is required, but a class with zero hp is almost certainly an
- * authoring mistake. Kept as a positive number rather than merely a number so
- * the schema catches obviously-invalid stats. (No upper bound — content owns
- * balance.)
+ * A class's `hp` and `attack` are required, but zero/negative values are almost
+ * certainly authoring mistakes. Kept as positive numbers rather than merely
+ * numbers so the schema catches obviously-invalid stats. (No upper bound —
+ * content owns balance.)
  */
 export const packClassStrictSchema = packClassSchema.extend({
   hp: z.number().positive('hp must be a positive number'),
+  attack: z.number().positive('attack must be a positive number'),
 });
 
-/** A monster entry: stable id, display name, glyph, and required health. */
+/**
+ * A monster entry: stable id, display name, glyph, required health, a named
+ * `behavior` id the engine resolves through `behaviorRegistry` (never
+ * pack-supplied code), and an `attack` value copied onto the entity at spawn
+ * (design D2/D3/D9).
+ */
 export const packMonsterSchema = z.object({
   id: z.string().min(1, 'id must be a non-empty string'),
   name: z.string().min(1, 'name must be a non-empty string'),
   glyph: glyphSchema,
   hp: z.number(),
+  behavior: z.string().min(1, 'behavior must be a non-empty string'),
+  attack: z.number(),
   description: z.string().optional(),
 });
 
-/** A monster's `hp` must be positive (see class note above). */
+/** A monster's `hp` and `attack` must be positive (see class note above). */
 export const packMonsterStrictSchema = packMonsterSchema.extend({
   hp: z.number().positive('hp must be a positive number'),
+  attack: z.number().positive('attack must be a positive number'),
 });
 
 /**

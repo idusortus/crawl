@@ -4,18 +4,26 @@ import { describe, it, expect } from 'vitest';
 // prove the barrel re-exports everything the full flow needs.
 import {
   actorHp,
+  advanceMonsters,
   appendEvents,
   applyCommand,
   applyCommandWithPack,
+  attacked,
+  behaviorRegistry,
   blocked,
   computeFov,
   createGrid,
   createRng,
+  damageRegistry,
+  death,
+  DEFAULT_ATTACK,
   DEFAULT_GENERATOR_ID,
   DEFAULT_SIGHT_RADIUS,
+  deserializeSave,
   effectRegistry,
   entityAt,
   entityById,
+  entityHp,
   exploreInto,
   generateBspLevel,
   generateLevel,
@@ -25,25 +33,37 @@ import {
   itemUsed,
   levelChanged,
   loadPack,
+  MELEE_DAMAGE_KIND,
   MIN_CLASSES,
   MIN_ITEMS,
   MIN_MONSTERS,
   moved,
   noop,
   PACK_VERSION,
+  playerDied,
+  populateLevel,
   randInt,
+  resolveDamage,
+  resolveBehavior,
   resolveEffect,
+  resumeRun,
   rngFromState,
   rngToState,
+  SAVE_VERSION,
+  serializeSave,
   UnknownContentIdError,
   UnknownGeneratorIdError,
+  UnknownSaveVersionError,
   validatePack,
 } from '@engine/index';
 import type {
   AppliedEffect,
+  AttackCommand,
+  AttackedEvent,
   BlockedEvent,
   Command,
   ContentCollection,
+  DeathEvent,
   DescendCommand,
   Direction,
   EffectResolution,
@@ -55,10 +75,12 @@ import type {
   GenerateLevelInput,
   Grid,
   ItemEffect,
+  ItemPickedUpEvent,
   ItemUsedEvent,
   LevelChangedEvent,
   LevelGenerator,
   LevelGeneratorOptions,
+  LevelPopulation,
   LoadedPack,
   MovedEvent,
   MoveCommand,
@@ -66,11 +88,14 @@ import type {
   Pack,
   PackClass,
   PackItem,
+  PickupCommand,
+  PlayerDiedEvent,
   PackMonster,
   PackValidationResult,
   Position,
   Rng,
   RngState,
+  SaveEnvelope,
   UseItemCommand,
 } from '@engine/index';
 
@@ -89,10 +114,12 @@ describe('public engine surface (@engine)', () => {
     const player: Entity = { id: 'player', kind: 'player', pos: { x: 0, y: 0 } };
     const state: GameState = {
       grid,
-      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 1, y: 0 } },
       explored: new Array<boolean>(grid.width * grid.height).fill(false),
       entities: [player],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: rngToState(7, rng),
       events: [],
     };
@@ -149,7 +176,10 @@ describe('public engine surface (@engine)', () => {
     const monster: PackMonster = pack.monster('goblin');
     const item: PackItem = pack.item('healing-potion');
     expect(cls.hp).toBe(14);
+    expect(cls.attack).toBe(4);
     expect(monster.id).toBe('goblin');
+    expect(monster.behavior).toBe('chase');
+    expect(monster.attack).toBe(2);
     expect(item.effect).toEqual({ kind: 'heal', amount: 8 });
 
     // Schema surface: a non-throwing validation result.
@@ -175,10 +205,12 @@ describe('public engine surface (@engine)', () => {
     };
     const state: GameState = {
       grid,
-      level: { depth: 1, spawn: { x: 0, y: 0 } },
+      level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 1, y: 0 } },
       explored: new Array<boolean>(grid.width * grid.height).fill(false),
       entities: [player],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: rngToState(42, rng),
       events: [],
     };
@@ -271,13 +303,18 @@ describe('public engine surface — levelgen + FOV + descend (@engine)', () => {
     expect(explored).toEqual(spawnFov);
 
     // --- Build a GameState from the generated level -----------------------
-    const player: Entity = { id: 'player', kind: 'player', pos: level.spawn };
+    // The player must stand on the stairs to satisfy the Phase-7 descend gate;
+    // placement on the stairs (rather than the spawn) exercises a successful
+    // descend without changing what the engine generates.
+    const player: Entity = { id: 'player', kind: 'player', pos: level.stairs };
     const state: GameState = {
       grid,
       level,
       explored,
       entities: [player],
       playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
       rng: rngToState(1234, rng),
       events: [],
     };
@@ -307,5 +344,134 @@ describe('public engine surface — levelgen + FOV + descend (@engine)', () => {
     expect(result.state.explored[newIndex]).toBe(true);
     // Input state is never mutated.
     expect(state.level.depth).toBe(1);
+  });
+
+  // Task 5.2/5.3: the attack command, the combat registry, and the AI advance
+  // step are all reachable through the barrel alone.
+  it('exposes the Phase-5 attack/combat/AI surface', () => {
+    const grid: Grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(7);
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 2, y: 2 } },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: { x: 0, y: 0 }, hp: 10, attack: 4 },
+        { id: 'goblin', kind: 'goblin', pos: { x: 1, y: 0 }, hp: 5, behavior: 'chase', attack: 2 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: rngToState(7, rng),
+      events: [],
+    };
+
+    // Types exist and are usable from the barrel.
+    const attack: AttackCommand = { type: 'attack', direction: 'east' };
+    const d: DeathEvent = death('goblin');
+    const pd: PlayerDiedEvent = playerDied();
+    expect(d.type).toBe('death');
+    expect(pd.type).toBe('player-died');
+
+    // The explicit attack resolves and emits the final-shaped `attacked` event.
+    const result = applyCommand(state, attack, rngFromState(state.rng));
+    const ev: GameEvent = result.events[0];
+    expect(ev.type).toBe('attacked');
+    if (ev.type === 'attacked') {
+      expect(ev).toEqual(attacked('player', 'goblin', ev.amount, MELEE_DAMAGE_KIND));
+    }
+
+    // The damage + AI registries are exposed.
+    expect(typeof damageRegistry[MELEE_DAMAGE_KIND]).toBe('function');
+    expect(DEFAULT_ATTACK).toBe(1);
+    expect(entityHp({ id: 'x', kind: 'x', pos: { x: 0, y: 0 }, hp: 3 })).toBe(3);
+    const resolution = resolveDamage(
+      MELEE_DAMAGE_KIND,
+      state.entities[0],
+      state.entities[1],
+      createRng(1),
+    );
+    expect(resolution?.applied.kind).toBe(MELEE_DAMAGE_KIND);
+
+    expect(typeof behaviorRegistry.chase).toBe('function');
+    expect(typeof resolveBehavior('nope')).toBe('function');
+    const step = advanceMonsters(state, createRng(1));
+    expect(Array.isArray(step.entities)).toBe(true);
+  });
+});
+
+// Task 8.2: the save/load surface must be reachable through the barrel alone,
+// with `pickup`/`attack` commands and `populateLevel` exercised alongside it.
+describe('public engine surface — save/load (@engine)', () => {
+  it('round-trips a save and resumes it through the public surface', () => {
+    const pack: LoadedPack = loadPack(fantasyPack);
+
+    const grid: Grid = createGrid([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+    ]);
+    const rng = createRng(99);
+    const player: Entity = {
+      id: 'player',
+      kind: 'fighter',
+      pos: { x: 0, y: 0 },
+      hp: 14,
+      attack: 4,
+    };
+    const state: GameState = {
+      grid,
+      level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 2, y: 2 } },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [player, { id: 'item-0', kind: 'healing-potion', pos: { x: 0, y: 0 }, item: true }],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: rngToState(99, rng),
+      events: [],
+    };
+
+    // The `pickup` command + its event are on the public surface.
+    const pickup: PickupCommand = { type: 'pickup' };
+    const picked = applyCommand(state, pickup, rngFromState(state.rng));
+    expect(picked.events[0].type).toBe('item-picked-up');
+    const pickedEvent = picked.events[0] as ItemPickedUpEvent;
+    expect(pickedEvent.itemId).toBe('healing-potion');
+    expect(picked.state.carriedItemIds).toEqual(['healing-potion']);
+
+    // The save surface: SAVE_VERSION is separate/exported; round-trip + resume.
+    expect(SAVE_VERSION).toBe(1);
+    const log: Command[] = [pickup];
+    const json = serializeSave(picked.state, log, log.length);
+
+    const envelope: SaveEnvelope = deserializeSave(json);
+    expect(envelope.version).toBe(SAVE_VERSION);
+    expect(envelope.appliedCount).toBe(log.length);
+
+    const resumed: GameState = resumeRun(json);
+    expect(resumed).toEqual(picked.state);
+
+    // An unknown save version is rejected loudly through the barrel.
+    const bad = JSON.parse(json) as { version: number };
+    bad.version = 42;
+    expect(() => resumeRun(JSON.stringify(bad))).toThrow(UnknownSaveVersionError);
+
+    // `populateLevel` + `LevelPopulation` are exported and usable.
+    const generated: GeneratedLevel = generateLevel({
+      rng: createRng(5),
+      width: 40,
+      height: 30,
+      depth: 1,
+    });
+    const population: LevelPopulation = populateLevel(generated, pack, createRng(5));
+    expect(Array.isArray(population.entities)).toBe(true);
+
+    // The final-shaped `attacked` event type is exported.
+    const hit: AttackedEvent = attacked('player', 'goblin', 2, MELEE_DAMAGE_KIND);
+    expect(hit.type).toBe('attacked');
   });
 });

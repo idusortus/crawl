@@ -76,6 +76,16 @@ describe('createInitialState', () => {
     expect(actorHp(player!)).toBeGreaterThan(0);
   });
 
+  it("copies the player's attack from the pack's fighter class at spawn", () => {
+    const state = createInitialState(SEED, pack);
+    const player = entityById(state.entities, state.playerId);
+
+    // Without the copied `attack` the engine would fall back to DEFAULT_ATTACK
+    // (1) instead of the fighter's class attack (4) (design D2).
+    expect(player?.attack).toBe(pack.class(PLAYER_CLASS_ID).attack);
+    expect(player?.attack).toBeGreaterThan(0);
+  });
+
   it('is deterministic: the same seed yields an identical state', () => {
     expect(createInitialState(SEED, pack)).toEqual(createInitialState(SEED, pack));
   });
@@ -103,12 +113,26 @@ describe('createInitialState', () => {
     expect(fromState).not.toEqual(fromFresh);
   });
 
-  it('starts with an empty event log and the player as the only entity', () => {
+  it('starts with an empty event log and a populated level (player + monsters/items)', () => {
     const state = createInitialState(SEED, pack);
 
+    // Initial population emits no events — the log starts empty.
     expect(state.events).toEqual([]);
-    expect(state.entities).toHaveLength(1);
+    // The player is present and entities now include the depth-1 population.
+    expect(state.entities.some((entity) => entity.id === PLAYER_ID)).toBe(true);
+    expect(state.entities.length).toBeGreaterThan(1);
     expect(state.playerId).toBe(PLAYER_ID);
+  });
+
+  it("starts playing with no carried items and a stairs tile", () => {
+    const state = createInitialState(SEED, pack);
+
+    expect(state.status).toBe('playing');
+    expect(state.carriedItemIds).toEqual([]);
+    // Stairs are on a passable in-bounds tile distinct from the spawn.
+    expect(inBounds(state.grid, state.level.stairs)).toBe(true);
+    expect(isPassable(state.grid, state.level.stairs)).toBe(true);
+    expect(state.level.stairs).not.toEqual(state.level.spawn);
   });
 });
 
@@ -133,15 +157,26 @@ describe('dispatch contract', () => {
   it('threads the RNG state through dispatch without replaying it', () => {
     const before = createInitialState(SEED, pack);
 
+    // The Phase-7 stairs gate requires the player to stand on the current
+    // level's stairs; move them there via a fixture edit before dispatching.
+    const onStairs: GameState = {
+      ...before,
+      entities: before.entities.map((entity) =>
+        entity.id === before.playerId
+          ? { ...entity, pos: { ...before.level.stairs } }
+          : entity,
+      ),
+    };
+
     const result = applyCommandWithPack(
-      before,
+      onStairs,
       { type: 'descend' },
-      rngFromState(before.rng),
+      rngFromState(onStairs.rng),
       pack,
     );
 
-    expect(result.state.rng.seed).toBe(before.rng.seed);
+    expect(result.state.rng.seed).toBe(onStairs.rng.seed);
     // `descend` generates a level, so it must advance the RNG past the input.
-    expect(result.state.rng.state).not.toBe(before.rng.state);
+    expect(result.state.rng.state).not.toBe(onStairs.rng.state);
   });
 });

@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { createGrid, isPassable, entityAt } from '../grid';
+import {
+  attackTargetAt,
+  createGrid,
+  isFeature,
+  isLiving,
+  isPassable,
+  entityAt,
+} from '../grid';
 import { createRng, randInt } from '../rng';
 import type { GameState, Position } from '../types';
 
@@ -11,13 +18,15 @@ function makeState(): GameState {
   const rng = createRng(4242);
   return {
     grid,
-    level: { depth: 1, spawn: { x: 0, y: 0 } },
+    level: { depth: 1, spawn: { x: 0, y: 0 }, stairs: { x: 2, y: 1 } },
     explored: new Array<boolean>(grid.width * grid.height).fill(false),
     entities: [
       { id: 'player', kind: 'player', pos: { x: 0, y: 0 } },
       { id: 'rock', kind: 'rock', pos: { x: 2, y: 0 }, solid: true },
     ],
     playerId: 'player',
+    status: 'playing',
+    carriedItemIds: ['healing-potion'],
     rng: { seed: 4242, state: rng.state() },
     events: [
       { type: 'moved', entityId: 'player', from: { x: 0, y: 0 }, to: { x: 1, y: 0 } },
@@ -83,5 +92,24 @@ describe('JSON serialization round-trip', () => {
     const serialized = JSON.stringify(state);
     // Re-serializing the round-trip must be stable (no data loss/cycles).
     expect(JSON.stringify(JSON.parse(serialized))).toBe(serialized);
+  });
+
+  it('round-trips the run status, carried items, and level stairs without loss', () => {
+    const state = makeState();
+    const roundTripped: GameState = JSON.parse(JSON.stringify(state));
+
+    expect(roundTripped.status).toBe('playing');
+    expect(roundTripped.carriedItemIds).toEqual(['healing-potion']);
+    expect(roundTripped.level.stairs).toEqual({ x: 2, y: 1 });
+    expect(roundTripped).toEqual(state);
+  });
+
+  it("classifies the rock fixture as the blocked (other non-living occupant) class", () => {
+    // The `rock` carries neither `hp` nor the item discriminator, so it lands in
+    // the third, catch-all occupancy class: not living, not a feature.
+    const rock = entityAt(makeState().entities, { x: 2, y: 0 })!;
+    expect(isLiving(rock)).toBe(false);
+    expect(isFeature(rock)).toBe(false);
+    expect(attackTargetAt(makeState().entities, { x: 2, y: 0 })).toBeUndefined();
   });
 });

@@ -1,15 +1,20 @@
 /**
  * Pure glyph resolution for the tile renderer (change `expo-glyph-renderer`,
- * design D6; task 3.2).
+ * design D6; task 3.2; extended by `core-gameplay-loop` task 9.1 / design D10).
  *
  * This module is deliberately framework-free — no React, no React Native — so
  * it can be unit-tested under the node Vitest environment and so the pack
  * lookups are separated from layout. It imports only the `@engine` public
  * surface (types + `LoadedPack`) and the color tokens.
  *
- * Design D6 rules encoded here:
+ * Rules encoded here:
  *  - Entity glyphs are sourced from the loaded pack's `glyph` fields
- *    (`pack.class` / `pack.monster` / `pack.item`).
+ *    (`pack.class` / `pack.monster` / `pack.item`). Monsters and floor items
+ *    now carry `hp`/`behavior`/`attack` and the `item: true` discriminator
+ *    respectively, but glyph resolution still reads only `kind`.
+ *  - Stairs are a terrain feature, not an entity: they have no pack entry and
+ *    are drawn from the level's `stairs` position with the exported
+ *    {@link STAIRS_GLYPH} (`'>'`).
  *  - EVERY pack lookup is fallible: the `LoadedPack` resolvers throw
  *    `UnknownContentIdError` on a miss rather than returning `undefined`, so
  *    each lookup is wrapped and falls back to the safe glyph `?`. An entity
@@ -17,10 +22,12 @@
  *    crashed on.
  *  - Terrain is a documented pair: `.` for passable floor, `#` for a wall.
  *  - Visibility is a three-way treatment (visible > explored > unseen); unseen
- *    tiles reveal nothing, so their glyph is the blank string.
+ *    tiles reveal nothing, so their glyph is the blank string. The
+ *    explored-but-not-visible rule governs stairs too: a remembered stairs tile
+ *    shows flat terrain, not the stairs glyph.
  */
 
-import type { Entity, LoadedPack } from '@engine';
+import type { Entity, LoadedPack, Position } from '@engine';
 
 import { colors } from '../theme/colors';
 import type { ThemeColors } from '../theme/colors';
@@ -33,6 +40,9 @@ export const FLOOR_GLYPH = '.';
 
 /** The glyph for a non-passable wall tile. */
 export const WALL_GLYPH = '#';
+
+/** The glyph for the stairs terrain feature (`>`), which has no pack entry. */
+export const STAIRS_GLYPH = '>';
 
 /** The glyph for a tile the player has never seen — renders nothing. */
 export const UNSEEN_GLYPH = ' ';
@@ -68,6 +78,16 @@ export function entityGlyph(pack: LoadedPack, entity: Entity): string {
 
 /** The three-way visibility category, ordered visible > explored > unseen. */
 export type VisibilityCategory = 'visible' | 'explored' | 'unseen';
+
+/**
+ * Returns true when the run has ended and the renderer must show the game-over
+ * surface instead of the play view (spec: glyph-renderer "The terminal status is
+ * surfaced"). Kept a pure predicate so the terminal decision is unit-testable
+ * without a renderer and so `GameScreen` cannot drift from the state enum.
+ */
+export function isTerminal(status: 'playing' | 'dead'): boolean {
+  return status === 'dead';
+}
 
 /**
  * Classifies a tile's visibility. `visible` wins over `explored`; a tile that
@@ -119,6 +139,18 @@ export interface TileRenderInput {
   explored: boolean;
   /** The entity occupying the tile, if any (`entityAt(...)`). */
   entity?: Entity;
+  /**
+   * The tile's own coordinates. Required to test it against `stairs`; when
+   * omitted, a `stairs` input cannot match (so stairs simply are not drawn).
+   */
+  pos?: Position;
+  /**
+   * The level's stairs position (`state.level.stairs`). When supplied and equal
+   * to `pos`, the tile is a stairs feature. Stairs are not an entity and have no
+   * pack entry, so they are drawn with {@link STAIRS_GLYPH} rather than a pack
+   * lookup.
+   */
+  stairs?: Position;
   /** The loaded pack, needed only to resolve an entity glyph. */
   pack: LoadedPack;
   /** True when `entity` is the player (renderer distinguishes it). */
@@ -128,16 +160,21 @@ export interface TileRenderInput {
 }
 
 /**
- * Resolves the complete render pair for a tile: terrain or the entity over it,
- * plus the color for its visibility state.
+ * Resolves the complete render pair for a tile: terrain, stairs, or the entity
+ * over it, plus the color for its visibility state.
  *
  * Unseen tiles short-circuit: no glyph and the unseen background, revealing
- * nothing about terrain or occupants. On a seen tile the occupant's glyph is
- * drawn only while the tile is currently `visible`; an explored-but-not-visible
- * tile shows terrain alone (dimmed), never an occupant that has since left FOV.
+ * nothing about terrain or occupants. On a seen tile an occupant's glyph (or the
+ * stairs glyph) is drawn only while the tile is currently `visible`; an
+ * explored-but-not-visible tile shows terrain alone (dimmed), never an occupant
+ * that has since left FOV — the explored-but-not-visible rule governs stairs too.
+ *
+ * Precedence on a visible tile is entity over stairs over terrain: a monster or
+ * item standing on the stairs tile is what the player must see.
  */
 export function tileRender(input: TileRenderInput): TileRender {
-  const { passable, visible, explored, entity, pack, isPlayer } = input;
+  const { passable, visible, explored, entity, pos, stairs, pack, isPlayer } =
+    input;
   const palette = input.palette ?? colors;
 
   if (!visible && !explored) {
@@ -148,9 +185,20 @@ export function tileRender(input: TileRenderInput): TileRender {
     };
   }
 
+  const onStairs =
+    pos !== undefined &&
+    stairs !== undefined &&
+    pos.x === stairs.x &&
+    pos.y === stairs.y;
+
   let glyph = terrainGlyph(passable);
+  let isOccupant = false;
   if (visible && entity !== undefined) {
     glyph = entityGlyph(pack, entity);
+    isOccupant = true;
+  } else if (visible && onStairs) {
+    glyph = STAIRS_GLYPH;
+    isOccupant = true;
   }
 
   const dimmed = !visible;
@@ -158,7 +206,7 @@ export function tileRender(input: TileRenderInput): TileRender {
     ? visibilityStyle(false, true, palette)
     : isPlayer === true
       ? palette.player
-      : entity !== undefined
+      : isOccupant
         ? palette.entity
         : passable
           ? palette.floor

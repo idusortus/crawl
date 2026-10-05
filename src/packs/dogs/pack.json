@@ -1,0 +1,66 @@
+{
+  "id": "dogs",
+  "name": "Good Dogs",
+  "version": 2,
+  "classes": [
+    {
+      "id": "good-boy",
+      "name": "Good Boy",
+      "glyph": "d",
+      "hp": 12,
+      "attack": 4,
+      "description": "A loyal, eager-to-please scrapper with a wagging tail."
+    },
+    {
+      "id": "chonker",
+      "name": "Chonker",
+      "glyph": "D",
+      "hp": 20,
+      "attack": 3,
+      "description": "An enormous, unbothered unit. Slow, but very hard to move."
+    }
+  ],
+  "monsters": [
+    {
+      "id": "mail-carrier",
+      "name": "Mail Carrier",
+      "glyph": "m",
+      "hp": 6,
+      "behavior": "chase",
+      "attack": 2,
+      "description": "Walks right up to the fence no matter how loud you bark."
+    },
+    {
+      "id": "vacuum",
+      "name": "Vacuum Cleaner",
+      "glyph": "v",
+      "hp": 9,
+      "behavior": "chase",
+      "attack": 3,
+      "description": "A roaring beast on wheels that must be herded immediately."
+    },
+    {
+      "id": "squirrel",
+      "name": "Squirrel",
+      "glyph": "s",
+      "hp": 2,
+      "behavior": "idle",
+      "attack": 1,
+      "description": "Taunts from the fence line, then freezes and stares."
+    }
+  ],
+  "items": [
+    {
+      "id": "bone",
+      "name": "Bone",
+      "glyph": "b",
+      "effect": { "kind": "heal", "amount": 6 }
+    },
+    {
+      "id": "treat",
+      "name": "Treat",
+      "glyph": "t",
+      "effect": { "kind": "roll-heal", "min": 3, "max": 8 }
+    }
+  ]
+}

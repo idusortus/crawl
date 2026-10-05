@@ -12,7 +12,23 @@
 
 ---
 
-## 2026-10-04 — Stage 6 post-apply review: two client/UI defects the engine suite cannot see
+## 2026-10-04 — Stage 7 (`second-theme-pack`) outcome — abstraction-leak test passed with an empty engine diff
+
+**Context:** Stage 7 is the milestone's deliberate abstraction-leak test: author a second, thematically unrelated content pack (a comedic family-dog setting) under the *existing* version-2 pack schema and prove it loads with **zero changes to `src/engine/**`**. The engine had never actually been asked to express anything but fantasy, so the claim "content is data, not code" was asserted but untested. The acceptance criterion was mechanical: the diff of `src/engine/**` must be empty and `PACK_VERSION` must stay 2.
+
+**Choice:**
+- **The dogs pack is pure version-2 data and reuses only existing engine vocabulary.** `src/packs/dogs/pack.json`: 2 classes (`good-boy` 12hp/4atk, `chonker` 20hp/3atk), 3 monsters (`mail-carrier` and `vacuum` → `behavior: "chase"`; `squirrel` → `behavior: "idle"`), 2 items (`bone` → `{kind:'heal',amount:6}`, `treat` → `{kind:'roll-heal',min:3,max:8}`). Every theme element maps onto vocabulary the engine already has — **no new behavior, damage kind, effect kind, stat, or schema field was needed**, so no abstraction leak was found. (If one had been needed, the recorded response is to fix the generalization at the abstraction, not edit the engine for the pack.)
+- **`src/packs/dogs/index.ts` mirrors `src/packs/fantasy/index.ts` exactly.** `import rawPack from './pack.json'` → `export const dogsPack = rawPack` (raw, **no cast**) → `export type DogsPack = Pack` for already-validated consumers → `export default dogsPack`. The sole path from raw JSON to a validated pack stays `loadPack`/`validatePack`; a cast would lie about malformed data and defeat the loud-failure contract.
+- **The test adds a vocabulary-reuse "leak sentinel."** `src/packs/dogs/__tests__/dogs-pack.test.ts` (11 tests) asserts schema validity, the composition floor, the theme/identity (resolve-by-id, non-empty ids/names, one-char glyphs, positive class/monster `attack`), lossless JSON round-trip, and — the sentinel — every monster `behavior` is a key of the engine's exported `behaviorRegistry` and every item `effect.kind` is a kind the schema defines (`itemEffectSchema.options.map(o => o.shape.kind.value)`). A failure here means the pack leaked new vocabulary and the pack (not the engine) must be revised.
+- **Pack selection remains a one-line UI import; no picker is added.** `src/ui/hooks/useGame.ts` still hardcodes `loadPack(fantasyPack)` (~lines 34 and 96). Running the dogs pack is documented as a one-line change to `import { dogsPack } from '../../packs/dogs'` + `loadPack(dogsPack)`. A user-facing pack picker stays out of scope — and, importantly, would still require zero engine support.
+
+**Verification (recorded):** `git status --porcelain -- src/engine` → empty; `git diff --stat -- src/engine` → empty; `grep PACK_VERSION src/engine/schema/pack.ts` → `2`; `behaviorRegistry` reread → exactly `{chase, idle}`; effect union reread → exactly `heal`/`roll-heal`. `npm test` **409 passing** (was 398; +11), `npx tsc --noEmit` 0, `npm run lint` 0, `npx eslint src/engine --no-warn-ignored` 0, `npx vitest run src/packs/dogs` 11/11, all 10 task checkboxes ticked.
+
+**Trade-offs:** The dogs pack runs only by a source-level import swap until a picker exists (acceptable — the pack's contract is loadability and engine-neutrality, proven by tests, not that the shipped app selects it). The leak sentinel reads the schema's kinds programmatically rather than hardcoding, so it stays correct if the schema legitimately gains a kind later — but that also means the sentinel alone would not fail on an engine *addition*; the empty-diff check plus the fixed `PACK_VERSION`/registry reread are what catch an engine edit.
+
+**Revisit:** Never for the core claim — a second theme with an empty engine diff is now proven, and the boundary is an enforceable precedent. If a third pack ever appears to need a new behavior/effect/stat, treat it as a deliberate abstraction change with its own `PACK_VERSION` bump and spec delta, never as a pack-local workaround. If a picker is wanted, it is a `src/ui` change (list the available packs, swap the import) needing no engine support.
+
+---
 
 **Context:** The post-apply review of `core-gameplay-loop` (396 engine/pack/pure-UI tests, all gates green) probed the *seams the tests under-cover* and found two real defects in the `src/ui` client that no test exercises. Both are outside the engine and do not affect engine determinism, but they break shipped behavior: `createInitialState.ts` never copies the class `attack` onto the player entity, and the client save/resume cursor drifts so a second resume double-applies.
 

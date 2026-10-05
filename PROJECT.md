@@ -39,12 +39,12 @@ npm start         # expo start
 - Randomness is only ever drawn through the injected seeded RNG whose state travels in `GameState`. Same seed + same command sequence ⇒ identical outcome.
 - Content never lives in the engine. Content is data in `src/packs` (Stage 2+); M1 hardcodes fixtures only inside tests.
 
-## Out of Scope (through Stage 6)
+## Out of Scope (through Stage 7)
 - Engine changes driven by the client — the renderer consumes `@engine` only; determinism, framework-freedom, and content-as-data remain structural invariants.
-- A second theme pack (Stage 7) — the abstraction-leak test.
+- A user-facing pack picker (Stage 7's dogs pack is run by a one-line `useGame.ts` import swap) — a picker is a `src/ui` concern and would need no engine support.
 - Skia/canvas rendering, a camera/scrolling, animation, or audio — the fixed 40×30 glyph grid is the v1 renderer.
 - A web target (`react-native-web`/`react-dom` + web bundler) — input/web-keyboard is a dev convenience only.
-- ECS, scripting engine, event bus, or abstractions built ahead of a second use case (the Stage 7 "dogs" pack is the abstraction-leak test).
+- ECS, scripting engine, event bus, or abstractions built ahead of a second use case (the Stage 7 "dogs" pack proved no such abstraction was needed).
 
 ## Success Criteria
 - A seeded engine test builds a fixed grid, applies a fixed command sequence, and reproduces the exact final state and event stream — including across a serialize/resume split.
@@ -59,7 +59,7 @@ npm start         # expo start
 4. **APK pipeline** — build/CI change to produce an installable Android APK. *(complete — the workflow is proven live: `v0.1.0` and `v0.2.0` each built, verified, and attached a signed `crawl-<tag>.apk` to a GitHub Release)*
 5. **`expo-glyph-renderer`** — Expo Router shell + glyph renderer + input mapping. *(complete)*
 6. **`core-gameplay-loop`** — AI, combat, items, stairs, permadeath, save/load. *(complete — seeded monster/item population, named behavior + damage registries, bump-to-attack + permadeath, pickup/use-item, stairs-gated populated descent, and a JSON-state + command-log save/load surface resumed by replaying the remainder; the UI dispatches the new commands through a game-over surface and saves/resumes via the engine save path)*
-7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test). *(next)*
+7. `second-theme-pack` — the "dogs" pack with **no engine changes** (the abstraction-leak test). *(complete — `src/packs/dogs/` is a version-2 family-dog pack that loads through the existing loader with an **empty `src/engine` diff**; vocabulary-reuse sentinel tests prove no behavior/effect/stat was added; run it via the one-line `useGame.ts` import swap)*
 
 ---
 

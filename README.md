@@ -9,7 +9,7 @@ A framework-free, deterministic TypeScript roguelike **engine** (`src/engine`) w
 npm install
 
 # 2. Verify the toolchain (no device required)
-npm test          # Vitest engine + pack + pure-UI tests (398)
+npm test          # Vitest engine + pack + pure-UI tests (409)
 npm run typecheck # tsc --noEmit
 npm run lint      # ESLint, incl. the src/engine purity boundary
 
@@ -58,7 +58,9 @@ The loop is **command-in / event-out** (`applyCommand(state, command, rng) -> { 
 
 The engine is **pure**: it must never import `react`/`react-native`/`expo`, and must never use `Math.random`/`Date.now`/`Date`. Determinism comes from an injected seeded RNG whose state travels inside `GameState` (`{ seed, state }`). ESLint fails CI on any violation under `src/engine/**`. The app entry is now **Expo Router** (`main: expo-router/entry`), with file-based routes under `src/app/`; the placeholder `App.tsx`/`index.ts` root entry has been removed. Consume the engine from UI code with a **bare** `import { … } from '@engine'` — `tsconfig.json` maps the exact path.
 
-> Scope: Stages 1–5 ship the Expo/TS scaffold + tooling; the engine core (seeded RNG, 2D grid + occupancy, JSON-clean types, command loop with `move`/`use-item`/`descend`); a versioned content-pack schema/loader with the first real pack; level generation + FOV; and an Expo Router glyph renderer with D-pad/Descend input (memoized `<Text>` tiles, HUD, recoverable pack-load error surface). The APK pipeline builds an installable Android APK in CI. Stage 6 (`core-gameplay-loop`) is engine-complete and UI-complete: seeded monster/item population, a named behavior registry with a deterministic per-turn advance step, a named damage registry (bump-to-attack, permadeath, pickup/use-item), a save/load surface, and the client wiring for the new commands, game-over surface, and save/resume/auto-save. A second theme pack (the abstraction-leak test) is Stage 7.
+> Scope: Stages 1–5 ship the Expo/TS scaffold + tooling; the engine core (seeded RNG, 2D grid + occupancy, JSON-clean types, command loop with `move`/`use-item`/`descend`); a versioned content-pack schema/loader with the first real pack; level generation + FOV; and an Expo Router glyph renderer with D-pad/Descend input (memoized `<Text>` tiles, HUD, recoverable pack-load error surface). The APK pipeline builds an installable Android APK in CI. Stage 6 (`core-gameplay-loop`) is engine-complete and UI-complete: seeded monster/item population, a named behavior registry with a deterministic per-turn advance step, a named damage registry (bump-to-attack, permadeath, pickup/use-item), a save/load surface, and the client wiring for the new commands, game-over surface, and save/resume/auto-save. Stage 7 (`second-theme-pack`) proves the abstraction-leak test: a second, family-dog pack (`src/packs/dogs/`) loads as version-2 data with an empty `src/engine` diff.
+
+> **Content packs & the abstraction-leak test.** All game content is declarative version-2 data under `src/packs/` — the engine never embeds content. `src/packs/fantasy/` is the original pack; `src/packs/dogs/` is a second, thematically unrelated **family-dog** pack that loads through the *same* `loadPack`/`validatePack` with **zero changes to `src/engine/**`** (both `git status --porcelain -- src/engine` and `git diff --stat -- src/engine` are empty; `PACK_VERSION` stays 2 and no behavior/effect/stat vocabulary was added). The app currently hardcodes `fantasyPack` in `src/ui/hooks/useGame.ts`; to play the dogs pack, change that one import to `import { dogsPack } from '../../packs/dogs'` and `loadPack(dogsPack)`. A pack picker is out of scope and would need no engine support either.
 
 ## Building an Android APK / Releases
 
@@ -111,6 +113,7 @@ crawl/
       __tests__/
     packs/  # content packs (data only)
       fantasy/   # pack.json + thin TS entry + tests (2 classes, 3 monsters, 5 items)
+      dogs/      # second pack, the abstraction-leak test: family-dog theme, no engine change (2 classes, 3 monsters, 2 items)
     ui/     # React Native client (Stage 5): components/, hooks/, logic/ (glyphs, input, save), providers/, screens/, state/, theme/
   openspec/  # change proposals & specs
 ```

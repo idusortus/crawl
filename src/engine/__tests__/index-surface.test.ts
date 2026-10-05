@@ -40,6 +40,7 @@ import {
   moved,
   noop,
   PACK_VERSION,
+  PackRequiredForReplayError,
   playerDied,
   populateLevel,
   randInt,
@@ -459,6 +460,13 @@ describe('public engine surface — save/load (@engine)', () => {
     const bad = JSON.parse(json) as { version: number };
     bad.version = 42;
     expect(() => resumeRun(JSON.stringify(bad))).toThrow(UnknownSaveVersionError);
+
+    // A pack-free replay of a content-dependent remainder is rejected loudly
+    // through the barrel (change `review-fixes-augment`).
+    expect(new PackRequiredForReplayError(['descend'])).toBeInstanceOf(Error);
+    expect(() =>
+      resumeRun(serializeSave(picked.state, [{ type: 'descend' }], 0)),
+    ).toThrow(PackRequiredForReplayError);
 
     // `populateLevel` + `LevelPopulation` are exported and usable.
     const generated: GeneratedLevel = generateLevel({

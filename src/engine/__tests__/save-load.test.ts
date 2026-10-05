@@ -41,6 +41,7 @@ import type {
 } from '@engine/index';
 import {
   deserializeSave,
+  PackRequiredForReplayError,
   replayCommands,
   resumeRun,
   SAVE_VERSION,
@@ -362,30 +363,145 @@ describe('save inspection without the pack', () => {
     expect(asText).not.toContain('"classes"');
   });
 
-  it('replays the remainder pack-free, nooping use-item instead of resolving it', () => {
+  it('deserializes a content-dependent remainder without a pack (inspection stays pack-free)', () => {
     const pack = testPack();
     const initial = makeState(pack);
-    // Mid-run state has an unapplied `use-item` after appliedCount = 2.
     const midRun = replay(initial, COMMANDS.slice(0, 2), pack);
     const json = serializeSave(midRun, COMMANDS, 2);
 
-    const packFree = resumeRun(json); // no pack
-    const packAware = resumeRun(json, pack);
+    // `deserializeSave` never needs a pack: the envelope parses and still names
+    // the unapplied `use-item` by id, with no embedded content objects.
+    const env = deserializeSave(json);
+    expect(env.appliedCount).toBe(2);
+    expect(env.commands[2]).toEqual({ type: 'use-item', itemId: 'potion' });
+  });
+});
 
-    // Without a pack the use-item cannot resolve: it degrades to a noop, so the
-    // carried potion is never consumed. With the pack it heals and consumes.
-    const packFreeUse = packFree.events.find(
-      (e) => e.type === 'noop' && e.reason === 'unknown-command:use-item',
+// ---------------------------------------------------------------------------
+// Pack-free replay guard (change `review-fixes-augment`, task 2.1/2.3)
+// ---------------------------------------------------------------------------
+
+describe('replayCommands — pack-free content-dependent remainder fails loudly', () => {
+  it('throws PackRequiredForReplayError naming "use-item" (no pack)', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    const midRun = replay(initial, COMMANDS.slice(0, 2), pack);
+
+    // The remainder (from appliedCount = 2) contains `use-item` at index 2.
+    let caught: unknown;
+    try {
+      replayCommands(midRun, COMMANDS, 2); // no pack
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PackRequiredForReplayError);
+    const err = caught as PackRequiredForReplayError;
+    expect(err.commandTypes).toEqual(['use-item']);
+    expect(err.message).toContain('use-item');
+    expect(err.message).toContain('pack');
+  });
+
+  it('throws PackRequiredForReplayError naming "descend" (no pack)', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    const descendLog: Command[] = [
+      { type: 'move', direction: 'east' },
+      { type: 'descend' },
+    ];
+    const midRun = replay(initial, descendLog.slice(0, 1), pack);
+
+    expect(() => replayCommands(midRun, descendLog, 1)).toThrow(
+      PackRequiredForReplayError,
     );
-    expect(packFreeUse).toBeDefined();
-    expect(packFree.carriedItemIds).toEqual(['potion']);
-    expect(packAware.carriedItemIds).toEqual([]);
+    let caught: unknown;
+    try {
+      replayCommands(midRun, descendLog, 1);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as PackRequiredForReplayError).commandTypes).toEqual([
+      'descend',
+    ]);
+  });
 
-    // The pack-aware resume did apply the heal.
-    const used = packAware.events.find((e) => e.type === 'item-used');
+  it('names both offending types deduplicated in first-seen order', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    const log: Command[] = [
+      { type: 'descend' },
+      { type: 'use-item', itemId: 'potion' },
+      { type: 'use-item', itemId: 'potion' },
+      { type: 'descend' },
+    ];
+
+    let caught: unknown;
+    try {
+      replayCommands(initial, log, 0); // no pack
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PackRequiredForReplayError);
+    expect((caught as PackRequiredForReplayError).commandTypes).toEqual([
+      'descend',
+      'use-item',
+    ]);
+  });
+
+  it('replays an all-move/attack/pickup remainder pack-free without error', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    const contentFree: Command[] = [
+      { type: 'move', direction: 'east' }, // onto the potion feature
+      { type: 'pickup' }, // pick it up
+      { type: 'attack', direction: 'east' }, // nothing there -> noop
+    ];
+
+    // No content-dependent command in the remainder: no error, state produced.
+    const packFree = replayCommands(initial, contentFree, 0);
+    expect(packFree).toBeDefined();
+    expect(packFree.events.some((e) => e.type === 'item-picked-up')).toBe(true);
+    expect(packFree.carriedItemIds).toEqual(['potion']);
+  });
+
+  it('a fully-applied save replays nothing without error (empty remainder)', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    // appliedCount === commands.length; the saved state already reflects the
+    // whole log (which *does* contain `use-item`/`descend`-free content).
+    const settled = replay(initial, COMMANDS, pack);
+    const json = serializeSave(settled, COMMANDS, COMMANDS.length);
+
+    const resumed = resumeRun(json); // no pack, empty remainder
+    expect(resumed).toEqual(settled);
+    // The whole log contains `use-item` but it is already applied, so no throw.
+    expect(COMMANDS.some((c) => c.type === 'use-item')).toBe(true);
+  });
+
+  it('the same use-item/descend remainder replays fine WITH a pack', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    const midRun = replay(initial, COMMANDS.slice(0, 2), pack);
+    const json = serializeSave(midRun, COMMANDS, 2);
+
+    // Pack supplied: the guard does not fire and the run resumes as before.
+    const resumed = resumeRun(json, pack);
+    const reference = replay(initial, COMMANDS, pack);
+    expect(resumed).toEqual(reference);
+    expect(resumed.carriedItemIds).toEqual([]);
+
+    const used = resumed.events.find((e) => e.type === 'item-used');
     expect(used).toBeDefined();
     if (used !== undefined && used.type === 'item-used') {
       expect(used).toEqual(itemUsed('player', 'potion', { kind: 'heal', amount: 5 }));
     }
+  });
+
+  it('resumeRun inherits the guard (no pack, content-dependent remainder)', () => {
+    const pack = testPack();
+    const initial = makeState(pack);
+    const midRun = replay(initial, COMMANDS.slice(0, 2), pack);
+    const json = serializeSave(midRun, COMMANDS, 2);
+
+    expect(() => resumeRun(json)).toThrow(PackRequiredForReplayError);
   });
 });

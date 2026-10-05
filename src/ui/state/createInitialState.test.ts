@@ -25,6 +25,7 @@ import {
 import type { GameState } from '@engine';
 
 import { fantasyPack } from '../../packs/fantasy';
+import { dogsPack } from '../../packs/dogs';
 
 import {
   createInitialState,
@@ -133,6 +134,60 @@ describe('createInitialState', () => {
     expect(inBounds(state.grid, state.level.stairs)).toBe(true);
     expect(isPassable(state.grid, state.level.stairs)).toBe(true);
     expect(state.level.stairs).not.toEqual(state.level.spawn);
+  });
+});
+
+describe('createInitialState — pack-agnostic player class (Finding A)', () => {
+  it('builds from the dogs pack with no class id (does not throw)', () => {
+    const dogs = loadPack(dogsPack);
+
+    // Against the old hardcoded `'fighter'` literal this threw
+    // `UnknownContentIdError` because the dogs pack declares no `fighter`.
+    const state = createInitialState(SEED, dogs);
+    const player = entityById(state.entities, state.playerId);
+
+    expect(player).toBeDefined();
+    // The default is the pack's FIRST declared class (`good-boy`).
+    expect(player?.kind).toBe('good-boy');
+    expect(['good-boy', 'chonker']).toContain(player?.kind);
+  });
+
+  it("sources the dogs player's HP/attack from that same class", () => {
+    const dogs = loadPack(dogsPack);
+    const state = createInitialState(SEED, dogs);
+    const player = entityById(state.entities, state.playerId);
+    const cls = dogs.class(player!.kind);
+
+    expect(actorHp(player!)).toBe(cls.hp);
+    expect(player?.attack).toBe(cls.attack);
+    expect(actorHp(player!)).toBeGreaterThan(0);
+  });
+
+  it('honors an explicit class id from any pack', () => {
+    const dogs = loadPack(dogsPack);
+    const state = createInitialState(SEED, dogs, 'chonker');
+    const player = entityById(state.entities, state.playerId);
+
+    expect(player?.kind).toBe('chonker');
+    expect(actorHp(player!)).toBe(dogs.class('chonker').hp);
+    expect(player?.attack).toBe(dogs.class('chonker').attack);
+  });
+
+  it('fails loudly when the explicit class id is absent from the pack', () => {
+    const dogs = loadPack(dogsPack);
+    expect(() => createInitialState(SEED, dogs, 'fighter')).toThrow();
+  });
+
+  it('leaves the fantasy default unchanged (still the fighter class)', () => {
+    const state = createInitialState(SEED, pack);
+    const player = entityById(state.entities, state.playerId);
+    const fighter = pack.class(PLAYER_CLASS_ID);
+
+    expect(player?.kind).toBe('fighter');
+    expect(actorHp(player!)).toBe(fighter.hp);
+    expect(player?.attack).toBe(fighter.attack);
+    // The explicit-id and default paths agree for the fantasy pack.
+    expect(createInitialState(SEED, pack, PLAYER_CLASS_ID)).toEqual(state);
   });
 });
 

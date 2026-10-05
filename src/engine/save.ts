@@ -37,6 +37,15 @@
  * payload (design D8; save-load spec "A save declares a version that is checked
  * on load").
  *
+ * A pack-free replay whose unapplied remainder contains a content-dependent
+ * command (`use-item` or `descend`) is rejected **loudly** with a typed
+ * `PackRequiredForReplayError` naming the offending command types, rather than
+ * silently replaying a world that diverges from the pack-aware run (change
+ * `review-fixes-augment`, design D2). This is a precondition **at the replay
+ * seam only**: the content-free entry point's own `use-item`/`descend`
+ * behavior is unchanged (decisions.md Stage-6 Phase-7/Phase-8), and a remainder
+ * of only content-free commands still replays without a pack.
+ *
  * `SAVE_VERSION` is deliberately **separate** from `PACK_VERSION`: the save
  * envelope's format and the content pack's format evolve independently.
  *
@@ -102,6 +111,40 @@ export class UnknownSaveVersionError extends Error {
     this.name = 'UnknownSaveVersionError';
     this.version = version;
     this.supported = supported;
+  }
+}
+
+/**
+ * Thrown when a **pack-free** replay is asked to apply a content-dependent
+ * command.
+ *
+ * The content-free entry point has a documented, legitimate noop/unpopulated
+ * behavior for `use-item` (`unknown-command:use-item`) and `descend` (an
+ * unpopulated level) — decisions.md Stage-6 Phase-7/Phase-8. That asymmetry is
+ * only wrong for **replay**, where the caller's intent is to reproduce the
+ * original run: silently replaying noop/unpopulated commands produces a state
+ * that diverges from the pack-aware run. So `replayCommands` throws this error
+ * **before applying anything** when no pack is supplied and the unapplied
+ * remainder contains a `use-item` or `descend` command, naming the offending
+ * command types (change `review-fixes-augment`, design D2).
+ *
+ * Supplying the pack restores the correct path; a remainder of only
+ * content-free commands (`move`/`attack`/`pickup`) still replays without a pack,
+ * and `deserializeSave` (inspection) is untouched.
+ */
+export class PackRequiredForReplayError extends Error {
+  /** The offending command types, deduplicated in first-seen order. */
+  readonly commandTypes: string[];
+
+  constructor(commandTypes: string[]) {
+    super(
+      `a content pack is required to replay the remaining command log: ` +
+        `it contains content-dependent command type(s) ${commandTypes
+          .map((type) => `"${type}"`)
+          .join(', ')}`,
+    );
+    this.name = 'PackRequiredForReplayError';
+    this.commandTypes = commandTypes;
   }
 }
 
@@ -191,13 +234,53 @@ export function deserializeSave(json: string): SaveEnvelope {
 }
 
 /**
+ * The command types whose content-free resolution diverges from the pack-aware
+ * one, so they cannot be replayed without a pack (design D2).
+ *
+ * `use-item` noops (`unknown-command:use-item`) and `descend` generates an
+ * unpopulated level on the content-free path — both legitimate for a live
+ * caller, both wrong for a replay that means to reproduce a run.
+ */
+const CONTENT_DEPENDENT_COMMAND_TYPES: ReadonlySet<string> = new Set([
+  'use-item',
+  'descend',
+]);
+
+/**
+ * Returns the content-dependent command types present in `commands`,
+ * deduplicated in first-seen order. Used only to build the loud replay error.
+ */
+function contentDependentTypes(commands: Command[]): string[] {
+  const found: string[] = [];
+  for (const command of commands) {
+    const type = (command as { type?: unknown }).type;
+    if (
+      typeof type === 'string' &&
+      CONTENT_DEPENDENT_COMMAND_TYPES.has(type) &&
+      !found.includes(type)
+    ) {
+      found.push(type);
+    }
+  }
+  return found;
+}
+
+/**
  * Applies **only the remainder** of `commands` to `state`.
  *
  * `commands.slice(appliedCount)` is replayed in order from the saved state,
  * through `applyCommandWithPack` when `pack` is supplied (so `use-item`
- * resolves) and through `applyCommand` otherwise (whose content-free path noops
- * `use-item`). Each command resumes the RNG from the running state's `rng`
- * field exactly as a live consumer would, so the replay advances identically.
+ * resolves and `descend` populates) and through `applyCommand` otherwise. Each
+ * command resumes the RNG from the running state's `rng` field exactly as a
+ * live consumer would, so the replay advances identically.
+ *
+ * **Pack-free precondition (design D2).** When no pack is supplied and the
+ * unapplied remainder contains a content-dependent command (`use-item` or
+ * `descend`), this throws `PackRequiredForReplayError` naming the offending
+ * types **before applying anything**, rather than silently producing a state
+ * that diverges from the pack-aware run. A pack, an empty remainder
+ * (`appliedCount === commands.length`), and a remainder of only content-free
+ * commands (`move`/`attack`/`pickup`) replay unchanged.
  *
  * `appliedCount` is clamped defensively: a negative value replays the whole log
  * from the start, and a value beyond the log length replays nothing. A
@@ -212,6 +295,19 @@ export function replayCommands(
   pack?: LoadedPack,
 ): GameState {
   const start = Math.max(0, Math.min(appliedCount, commands.length));
+
+  // Pack-free replay of a content-dependent remainder is rejected loudly before
+  // anything is applied: the content-free path would silently noop `use-item`
+  // and generate an unpopulated level on `descend`, diverging from the run the
+  // caller means to reproduce (design D2). A pack, an empty remainder, and a
+  // content-free remainder are unaffected.
+  if (pack === undefined && start < commands.length) {
+    const offending = contentDependentTypes(commands.slice(start));
+    if (offending.length > 0) {
+      throw new PackRequiredForReplayError(offending);
+    }
+  }
+
   let current = state;
   for (let i = start; i < commands.length; i++) {
     const command = commands[i];

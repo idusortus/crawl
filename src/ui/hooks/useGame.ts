@@ -7,11 +7,15 @@
  * calls the engine's command entry point (`applyCommandWithPack`): every input
  * path goes through `dispatch`.
  *
- * Startup order matters (design D7): the pack loads FIRST, because
- * `createInitialState` needs it to source the player's class/HP. If the pack
- * fails to load, the typed error is captured as a recoverable `error` value and
- * no state is constructed — the app renders the error surface instead of
- * white-screening. If the pack loads, the initial state is built once.
+ * Startup order matters (design D7/D1): the pack loads FIRST, because
+ * `createInitialState` sources the player's class/HP/attack from it — by
+ * default the pack's first declared class, so any schema-valid pack (fantasy,
+ * dogs, or a future theme) is playable with no pack-specific class literal. If
+ * the pack fails to load, the typed error is captured as a recoverable `error`
+ * value and no state is constructed — the app renders the error surface
+ * instead of white-screening. If the pack loads, the initial state is built
+ * once. `createInitialState(seed, pack)` is called without a class id, which
+ * selects the pack's first declared class (change `review-fixes-augment`, D1).
  *
  * Determinism: the hook never holds an ambient RNG. Every dispatch derives an
  * `Rng` from `state.rng` via `rngFromState`, so state is the single source of

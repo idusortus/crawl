@@ -18,7 +18,9 @@
  * `advanceMonsters` + types), the level-population seam (`populateLevel` +
  * `LevelPopulation`), the pickup/attack commands + events, and the save surface
  * (`SAVE_VERSION`/`serializeSave`/`deserializeSave`/`replayCommands`/
- * `resumeRun` + `SaveEnvelope`).
+ * `resumeRun` + `SaveEnvelope`). Change `review-fixes-augment` adds the typed
+ * `PackRequiredForReplayError` (pack-free replay of a content-dependent
+ * remainder fails loudly).
  *
  * Nothing outside `src/engine` should reach deeper than this module. This module
  * must remain framework-free (no react / react-native / expo).
@@ -172,6 +174,7 @@ export type {
 // owns storage I/O.
 export {
   deserializeSave,
+  PackRequiredForReplayError,
   replayCommands,
   resumeRun,
   SAVE_VERSION,

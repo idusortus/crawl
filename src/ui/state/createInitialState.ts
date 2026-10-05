@@ -1,13 +1,21 @@
 /**
- * Initial client game state (change `expo-glyph-renderer`, design D4/D7).
+ * Initial client game state (change `expo-glyph-renderer`, design D4/D7;
+ * pack-agnostic player class by change `review-fixes-augment`, design D1).
  *
  * This is the client-side factory that assembles the first `GameState` the
  * renderer ever draws. It is deliberately a pure function of `(seed, pack)` so
  * a run is reproducible from its seed and the loaded content pack:
  *
  *  - the pack is passed in (never imported here) and MUST already be loaded,
- *    because the player's starting HP comes from `pack.class(PLAYER_CLASS_ID)`
- *    and a pack lookup throws `UnknownContentIdError` on a miss;
+ *    because the player's starting HP/attack come from a class looked up on it;
+ *  - **the class is pack-agnostic**: `classId` defaults to the pack's first
+ *    declared class (`pack.pack.classes[0].id`), so any schema-valid pack —
+ *    the fantasy pack, the dogs pack, or any future theme — is playable with no
+ *    pack-specific class literal in the client. An explicit `classId` is still
+ *    looked up through `pack.class(classId)`, so naming a class the pack does
+ *    not declare throws `UnknownContentIdError` (loud, per design D5). The
+ *    loader's composition floor guarantees ≥ `MIN_CLASSES` (2) classes, so
+ *    index 0 always exists and reading it cannot throw (design D1).
  *  - the level is generated from an RNG seeded from `seed`, the exact same
  *    injected RNG the command loop threads through state;
  *  - the returned state's `rng` is captured **after** both `generateLevel` and
@@ -31,9 +39,17 @@ import {
 import type { GameState, LoadedPack } from '@engine';
 
 /**
- * The fantasy pack's player class id. The pack defines `fighter`/`rogue` and no
- * `player` class, so the player is a `fighter`; hard-coding any other id would
- * make every `pack.class(...)` lookup throw (design D4).
+ * The fantasy pack's player class id, kept as a documented convenience
+ * default for the fantasy pack (`'fighter'`).
+ *
+ * This is **no longer** the factory's implicit subject: `createInitialState`
+ * now defaults to the loaded pack's first declared class
+ * (`pack.pack.classes[0].id`), so a non-fantasy pack (e.g. the dogs pack's
+ * `good-boy`/`chonker`) is playable without this literal ever being used
+ * (change `review-fixes-augment`, design D1). It remains exported for callers
+ * that explicitly want the fantasy default (e.g. tests), and it is safe only
+ * against the fantasy pack — an explicit id is still validated by
+ * `pack.class(...)`, which throws `UnknownContentIdError` on a miss.
  */
 export const PLAYER_CLASS_ID = 'fighter';
 
@@ -54,11 +70,21 @@ const LEVEL_DEPTH = 1;
 /**
  * Builds the initial `GameState` for a run.
  *
- * @param seed  The run's seed; the same seed plus the same pack yields an
+ * @param seed    The run's seed; the same seed plus the same pack yields an
  *   identical state (determinism is a structural engine invariant).
- * @param pack  The loaded content pack the player's class/HP are sourced from.
+ * @param pack    The loaded content pack the player's class/HP/attack are
+ *   sourced from.
+ * @param classId The player's class id within `pack`; defaults to the pack's
+ *   first declared class (`pack.pack.classes[0].id`), which cannot throw
+ *   because the loader guarantees at least `MIN_CLASSES` (2) classes. An
+ *   explicit id is resolved through `pack.class(classId)`, so naming a class
+ *   the pack does not declare throws `UnknownContentIdError` (design D1).
  */
-export function createInitialState(seed: number, pack: LoadedPack): GameState {
+export function createInitialState(
+  seed: number,
+  pack: LoadedPack,
+  classId: string = pack.pack.classes[0].id,
+): GameState {
   const rng = createRng(seed);
   const generated = generateLevel({
     rng,
@@ -67,15 +93,18 @@ export function createInitialState(seed: number, pack: LoadedPack): GameState {
     depth: LEVEL_DEPTH,
   });
 
-  // The player's class stats are copied from the pack at spawn (design D2):
+  // The player's class stats are copied from the pack at spawn (design D2/D1):
   // without `attack` the engine would fall back to `DEFAULT_ATTACK` (1) and the
-  // fighter would hit for 1 instead of its class's 4.
+  // player would hit for 1 instead of its class value. `classId` is pack-chosen
+  // (defaulting to the pack's first declared class), so no pack-specific literal
+  // is embedded here.
+  const playerClass = pack.class(classId);
   const player = {
     id: PLAYER_ID,
-    kind: PLAYER_CLASS_ID,
+    kind: classId,
     pos: generated.level.spawn,
-    hp: pack.class(PLAYER_CLASS_ID).hp,
-    attack: pack.class(PLAYER_CLASS_ID).attack,
+    hp: playerClass.hp,
+    attack: playerClass.attack,
   };
 
   // Population shares the SAME `rng` instance generation just consumed, so

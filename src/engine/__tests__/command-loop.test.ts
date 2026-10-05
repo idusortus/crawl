@@ -16,25 +16,6 @@ import {
 import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from '../fov';
 import type { Command, GameEvent, GameState, LoadedPack, Position } from '../index';
 
-/** A minimal valid pack used by the descent-population assertion (task 7.2). */
-function testPack(): LoadedPack {
-  return loadPack({
-    id: 'command-loop-test-pack',
-    name: 'Command Loop Test Pack',
-    version: 2,
-    classes: [
-      { id: 'fighter', name: 'Fighter', glyph: '@', hp: 10, attack: 4 },
-      { id: 'rogue', name: 'Rogue', glyph: 'r', hp: 8, attack: 3 },
-    ],
-    monsters: [
-      { id: 'slime', name: 'Slime', glyph: 's', hp: 2, behavior: 'chase', attack: 1 },
-    ],
-    items: [
-      { id: 'potion', name: 'Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
-    ],
-  });
-}
-
 /**
  * Test fixture: a 3x3 grid with a wall column at x=1.
  *
@@ -1159,18 +1140,20 @@ describe('permadeath: the run is terminal', () => {
 });
 
 describe('descent does not advance the new level monsters', () => {
-  it('a successful descend places monsters that do not act that turn', () => {
-    // A hand-built small level-1 fixture with the player already on the stairs
-    // (Phase-7 gate). The pack-aware entry point populates the generated level-2,
-    // so the D5 rule can be asserted directly: `level-changed` must not be
-    // followed by any monster act even though the fresh level has monsters.
+  /**
+   * A hand-built small level-1 fixture with the player already on the stairs
+   * (Phase-7 gate). The pack-aware entry point populates the generated level-2,
+   * so the D5 rule is asserted directly: `level-changed` must not be followed by
+   * any monster act even though the fresh level has monsters.
+   */
+  function onStairsState(seed: number): GameState {
     const grid = createGrid([
       [true, false, true],
       [true, false, true],
       [true, false, true],
     ]);
-    const rng = createRng(0x51eed);
-    const state: GameState = {
+    const rng = createRng(seed);
+    return {
       grid,
       level: { depth: 1, spawn: at(0, 0), stairs: at(2, 2) },
       explored: new Array<boolean>(grid.width * grid.height).fill(false),
@@ -1180,22 +1163,112 @@ describe('descent does not advance the new level monsters', () => {
       playerId: 'player',
       status: 'playing',
       carriedItemIds: [],
-      rng: { seed: 0x51eed, state: rng.state() },
+      rng: { seed, state: rng.state() },
       events: [],
     };
-    const descPack = testPack();
-    const { state: next, events } = applyCommandWithPack(
+  }
+
+  /**
+   * A pack with several `chase` monsters so a fresh level is densely populated
+   * and a within-range fresh monster is likely — making the no-advance gate
+   * falsifiable rather than vacuously true (finding C2).
+   */
+  function densePack(): LoadedPack {
+    return loadPack({
+      id: 'descend-turn-test-pack',
+      name: 'Descend Turn Test Pack',
+      version: 2,
+      classes: [
+        { id: 'fighter', name: 'Fighter', glyph: '@', hp: 10, attack: 4 },
+        { id: 'rogue', name: 'Rogue', glyph: 'r', hp: 8, attack: 3 },
+      ],
+      monsters: [
+        { id: 'slime', name: 'Slime', glyph: 's', hp: 2, behavior: 'chase', attack: 1 },
+        { id: 'rat', name: 'Rat', glyph: 'r', hp: 3, behavior: 'chase', attack: 1 },
+        { id: 'bat', name: 'Bat', glyph: 'b', hp: 4, behavior: 'chase', attack: 2 },
+        { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 5, behavior: 'chase', attack: 2 },
+      ],
+      items: [
+        { id: 'potion', name: 'Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
+      ],
+    });
+  }
+
+  /**
+   * Runs a pack-aware descent from the on-stairs fixture and returns the result.
+   * A fresh monster "could act" per the AI's awareness rule (design D3): chase
+   * pursues when it has line of sight to the player, or when it is within
+   * `DEFAULT_BEHAVIOR_RANGE` (Chebyshev 8) regardless of sight.
+   */
+  function descend(seed: number, pack: LoadedPack) {
+    const state = onStairsState(seed);
+    return applyCommandWithPack(
       state,
       { type: 'descend' },
       rngFromState(state.rng),
-      descPack,
+      pack,
     );
-    // Exactly the level-change event: no monster event follows on the new level.
+  }
+
+  /**
+   * True when some freshly placed monster on `next` is within the awareness
+   * range of the player's new position, so it *would* act on a normal turn.
+   */
+  function freshMonsterInRange(next: GameState): boolean {
+    const player = entityById(next.entities, next.playerId);
+    if (player === undefined) return false;
+    return next.entities.some((entity) => {
+      if (entity.id === next.playerId || entity.item === true) return false;
+      const distance = Math.max(
+        Math.abs(entity.pos.x - player.pos.x),
+        Math.abs(entity.pos.y - player.pos.y),
+      );
+      return distance <= 8;
+    });
+  }
+
+  it('emits exactly level-changed on a within-range fresh monster (deterministic fixture)', () => {
+    // Seed 5 is a confirmed case (probed): the fresh level places a skeleton at
+    // Chebyshev 6 from the new spawn, so a wrongly-promoted `level-changed`
+    // gate would let it act and add a `moved`/`attacked` event. The descent must
+    // emit only the level-change outcome.
+    const { state: next, events } = descend(5, densePack());
+
     expect(events).toEqual([{ type: 'level-changed', depth: 2 }]);
     expect(next.level.depth).toBe(2);
     // The new level is populated, proving there were monsters that *could* act.
     expect(next.entities.some((e) => e.item !== true && e.id !== 'player')).toBe(
       true,
     );
+    // And at least one is within range of the new spawn — so the inert result is
+    // meaningful, not just a far-away idle population.
+    expect(freshMonsterInRange(next)).toBe(true);
+  });
+
+  it('is inert for every seed whose fresh level has a monster in range (seed sweep)', () => {
+    // Curated seeds confirmed (probed against the dense pack) to place a fresh
+    // level-2 monster within awareness range of the new spawn. For each, the
+    // descend event stream must be exactly `level-changed`: no `moved`,
+    // `attacked`, or `death` from a fresh monster.
+    const inRangeSeeds = [5, 8, 10, 16, 19, 20, 21, 23, 27, 30, 40, 51];
+
+    let observedInRange = 0;
+    for (const seed of inRangeSeeds) {
+      const { state: next, events } = descend(seed, densePack());
+      expect(events).toEqual([{ type: 'level-changed', depth: 2 }]);
+      if (freshMonsterInRange(next)) observedInRange++;
+    }
+    // The sweep really did include seeds where a fresh monster was in range, so
+    // the assertion above is not vacuous.
+    expect(observedInRange).toBeGreaterThan(0);
+  });
+
+  it('a sweep over many seeds never advances a fresh monster', () => {
+    // Broad sweep: for every seed 0..99 the descent must emit exactly the
+    // level-change event, whether or not the fresh population is in range.
+    for (let seed = 0; seed < 100; seed++) {
+      const { events } = descend(seed, densePack());
+      expect(events).toEqual([{ type: 'level-changed', depth: 2 }]);
+    }
   });
 });

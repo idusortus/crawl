@@ -1,9 +1,6 @@
-# ui/input-mapping Specification
+# Spec Delta
 
-## Purpose
-Translates user input from on-screen controls and (on the web) the keyboard into engine commands, without ever mutating game state directly.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Directional controls emit move commands
 
@@ -23,20 +20,6 @@ The on-screen directional control SHALL present four movement directions in a sp
 
 - **WHEN** the on-screen controls are rendered
 - **THEN** no directional attack control group is present, and melee remains available through bump-to-attack
-
-### Requirement: A descend control emits a descend command
-
-The on-screen descend control SHALL emit a descend command that advances the player to the next dungeon level, and SHALL be available in play alongside the new combat, pickup, and use-item controls.
-
-#### Scenario: Descend is pressed
-
-- **WHEN** the user presses the descend control while the player is on the stairs
-- **THEN** a descend command is dispatched and the player moves to the next level
-
-#### Scenario: Descend off the stairs does not crash
-
-- **WHEN** the user presses the descend control while the player is not on the stairs
-- **THEN** a descend command is dispatched and the engine resolves it as a no-op without crashing
 
 ### Requirement: Keyboard input is a web-only convenience
 
@@ -62,37 +45,7 @@ Keyboard controls SHALL map the arrow keys to the corresponding move commands, S
 - **WHEN** the app runs on a native platform
 - **THEN** no keyboard-driven commands are dispatched
 
-### Requirement: Input dispatches commands without mutating state
-
-Input handling SHALL advance the game only by dispatching a command to the state owner, and SHALL NOT mutate the game state directly.
-
-#### Scenario: Input goes through dispatch
-
-- **WHEN** any control or keyboard input is received
-- **THEN** the game state changes only as a result of the dispatched command being resolved by the engine
-
-### Requirement: Save and resume controls emit save/resume actions
-
-The input layer SHALL provide a control to save the current run and a control to resume a saved run, so persistence is reachable in play.
-
-#### Scenario: A save control saves the run
-
-- **WHEN** the user presses the save control
-- **THEN** the current run is saved through the client's save path
-
-#### Scenario: A resume control resumes a saved run
-
-- **WHEN** the user presses the resume control and a save exists
-- **THEN** the saved run is resumed and becomes the current game state
-
-### Requirement: Every input dispatches a command or a defined action without mutating state
-
-Input handling SHALL advance the game only by dispatching a command to the state owner (or invoking a defined save/resume action), and SHALL NOT mutate game state directly.
-
-#### Scenario: Input goes through dispatch
-
-- **WHEN** any control or keyboard input is received
-- **THEN** the game state changes only as a result of the dispatched command being resolved by the engine, or of a defined save/resume action
+## ADDED Requirements
 
 ### Requirement: On-screen controls cover pickup, use-item, and ranged attack
 
@@ -146,3 +99,17 @@ The map SHALL accept taps: in normal play a tap on a cardinal-adjacent tile SHAL
 
 - **WHEN** the user taps a non-adjacent tile in normal mode or a non-monster tile in target mode
 - **THEN** no command is dispatched
+
+## REMOVED Requirements
+
+### Requirement: Controls exist for the core gameplay actions
+
+**Reason**: This requirement bundled an explicit directional attack control with pickup and use-item, and also stated that melee combat is reachable through those controls. Directional attack controls are removed as redundant with bump-to-attack, so the requirement as written no longer holds.
+
+**Migration**: Pickup, use-item, and the new ranged-attack control are specified by the ADDED requirement "On-screen controls cover pickup, use-item, and ranged attack"; movement and descend keep their existing requirements; melee is performed by moving into a living occupant (bump-to-attack).
+
+### Requirement: Movement and attack controls are visibly distinguished
+
+**Reason**: The directional attack control group is removed because directional melee is redundant with the existing bump-to-attack, so there is no longer an attack group to distinguish from the movement group. The movement control is likewise no longer a flat row.
+
+**Migration**: Melee is performed by moving into a living occupant (bump-to-attack). A single ranged-attack control appears only when a ranged weapon is carried and is labeled by its own action; range-checked combat no longer uses a per-direction control group.

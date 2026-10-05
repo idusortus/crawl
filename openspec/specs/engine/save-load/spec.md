@@ -35,7 +35,7 @@ The save envelope SHALL carry a save-format version, and loading SHALL reject an
 
 ### Requirement: Resume a run by replaying the remaining command log from the saved state
 
-Resuming SHALL reconstruct the run by deserializing the full saved state and replaying **only the remaining commands** (`commands.slice(appliedCount)`) from that state (with the pack when provided; the content-free entry point noops `use-item` when no pack is provided), producing a state and event stream identical to an uninterrupted run. The already-applied prefix (`commands.slice(0, appliedCount)`) SHALL NOT be replayed against the saved state. When no pack is supplied AND the unapplied remainder contains a content-dependent command (`use-item` or `descend`), replaying SHALL fail loudly with a typed error naming the offending command types rather than silently producing a state that diverges from the pack-aware run; this guard SHALL NOT alter the content-free entry point's own behavior for those commands, and a remainder with only content-free commands remains replayable without a pack.
+Resuming SHALL reconstruct the run by deserializing the full saved state and replaying **only the remaining commands** (`commands.slice(appliedCount)`) from that state (with the pack when provided; the content-free entry point noops `use-item` when no pack is provided), producing a state and event stream identical to an uninterrupted run. The already-applied prefix (`commands.slice(0, appliedCount)`) SHALL NOT be replayed against the saved state. When no pack is supplied AND the unapplied remainder contains a content-dependent command (`use-item`, `descend`, or `ranged-attack`), replaying SHALL fail loudly with a typed error naming the offending command types rather than silently producing a state that diverges from the pack-aware run; this guard SHALL NOT alter the content-free entry point's own behavior for those commands, and a remainder with only content-free commands remains replayable without a pack.
 
 #### Scenario: Resumed run matches an uninterrupted run
 
@@ -64,8 +64,13 @@ Resuming SHALL reconstruct the run by deserializing the full saved state and rep
 
 #### Scenario: Pack-free replay of a content-dependent remainder fails loudly
 
-- **WHEN** a save is resumed without a pack and the unapplied remainder contains a `use-item` or `descend` command
+- **WHEN** a save is resumed without a pack and the unapplied remainder contains a `use-item`, `descend`, or `ranged-attack` command
 - **THEN** resuming fails with a typed error naming the offending command types and produces no silently-diverged state
+
+#### Scenario: Pack-free replay of a ranged remainder fails loudly
+
+- **WHEN** a save is resumed without a pack and the only content-dependent command in the unapplied remainder is a `ranged-attack`
+- **THEN** resuming fails with a typed error naming `ranged-attack` and applies nothing
 
 #### Scenario: Pack-free replay of a content-free remainder still succeeds
 

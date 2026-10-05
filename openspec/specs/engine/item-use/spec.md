@@ -7,7 +7,7 @@ Defines the first content-driven action: an entity uses an item resolved through
 
 ### Requirement: Use an item by id
 
-The engine SHALL accept a command to use an item identified by id, resolve that item through the loaded content pack, and apply its effect to the acting entity. Using SHALL consume the item from the acting entity's carried items **only when it is carried**; whether the item is carried gates **consumption, not resolution**, so using an id the actor does not carry still resolves the effect and consumes nothing.
+The engine SHALL accept a command to use an item identified by id, resolve that item through the loaded content pack, and apply its effect to the acting entity. Using SHALL consume the item from the acting entity's carried items **only when it is carried**; whether the item is carried gates **consumption, not resolution**, so using an id the actor does not carry still resolves the effect and consumes nothing. An item that declares no `effect` (for example a ranged weapon) SHALL resolve as a no-op that consumes nothing, because it is fired through the ranged-attack command rather than used.
 
 #### Scenario: Using a known item applies its effect
 
@@ -18,6 +18,11 @@ The engine SHALL accept a command to use an item identified by id, resolve that 
 
 - **WHEN** a use-item command names an item present in the pack but absent from the actor's carried items
 - **THEN** the item's effect still resolves and applies to the actor, **no** instance is removed from `carriedItemIds`, and an event describing the outcome is emitted, with the input state unchanged (preserving the Stage-2 use-by-id behavior)
+
+#### Scenario: Using an effect-less item is a no-op
+
+- **WHEN** a use-item command names an item present in the pack that declares no `effect` (such as a ranged weapon)
+- **THEN** the engine emits a no-op event, does not apply any effect, and removes no instance from `carriedItemIds`, with the input state unchanged
 
 #### Scenario: Using an unknown item is rejected without corruption
 

@@ -5,11 +5,13 @@
  * task 5.1).
  *
  * A plus-shaped cross of four movement `Pressable`s — north above, west/east
- * flanking, south below — dispatching `{ type: 'move', direction }`. There is no
- * directional attack row: melee is bump-to-attack when a move enters a living
- * occupant (design D2), so no `{ type: 'attack' }` is dispatched from here. The
- * component owns no state and never touches `GameState` — it is a pure
- * dispatcher, so every input flows through the single command path in `useGame`.
+ * flanking, south below — dispatching `{ type: 'move', direction }`. The centre of
+ * the cross is a wait button dispatching the deterministic `{ type: 'wait' }`
+ * command, so a player can pass a turn in place. There is no directional attack
+ * row: melee is bump-to-attack when a move enters a living occupant (design D2),
+ * so no `{ type: 'attack' }` is dispatched from here. The component owns no state
+ * and never touches `GameState` — it is a pure dispatcher, so every input flows
+ * through the single command path in `useGame`.
  *
  * Each button carries an `accessibilityLabel` and `accessibilityRole`, since the
  * directional glyphs alone are not self-describing to a screen reader.
@@ -49,9 +51,36 @@ function DirectionButton({ direction, glyph, onPress }: DirectionButtonProps) {
   );
 }
 
+/** Props for the centre wait button. */
+interface WaitButtonProps {
+  /** Dispatches the wait command. */
+  onPress: () => void;
+}
+
+/**
+ * The stateless centre button. Sits between west and east and dispatches the
+ * deterministic `{ type: 'wait' }` command so a turn can be passed in place.
+ */
+function WaitButton({ onPress }: WaitButtonProps) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Wait a turn"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.button,
+        pressed === true && styles.pressed,
+      ]}
+    >
+      <Text style={styles.glyph}>•</Text>
+    </Pressable>
+  );
+}
+
 export function Dpad() {
   const { dispatch } = useGameContext();
   const move = (direction: Direction) => dispatch({ type: 'move', direction });
+  const wait = () => dispatch({ type: 'wait' });
 
   return (
     <View style={styles.pad}>
@@ -62,6 +91,7 @@ export function Dpad() {
         </View>
         <View style={styles.row}>
           <DirectionButton direction="west" glyph="◀" onPress={move} />
+          <WaitButton onPress={wait} />
           <DirectionButton direction="east" glyph="▶" onPress={move} />
         </View>
         <View style={styles.row}>

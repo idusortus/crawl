@@ -18,6 +18,11 @@
  * **Ranged weapons are filtered out of that list** (task 6.4): a weapon is
  * fired through the ranged control, never consumed as a use-item.
  *
+ * Inapplicable actions are hidden: `Pick up` renders only
+ * while a floor item is underfoot (`floorItemAt`) and `Descend` only while the
+ * player stands on the stairs (`isOnStairs`), so the bar never offers an action
+ * the engine would refuse.
+ *
  * The ranged control is rendered **only** while the player carries an item whose
  * pack entry declares a `ranged` descriptor, and its pressed state toggles
  * ephemeral target mode owned by `GameScreen` (design D7). It is hidden
@@ -34,6 +39,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useGameContext } from '../providers/GameProvider';
 import { hasRangedWeapon, isRangedWeapon } from '../logic/ranged';
+import { floorItemAt, isOnStairs } from '../logic/objects';
 import { colors } from '../theme/colors';
 
 /** One on-screen action button, described declaratively. */
@@ -66,18 +72,29 @@ export function ActionBar({ targetMode, onToggleTargetMode }: ActionBarProps) {
   // consumable (task 6.4).
   const usableItems = carried.filter((itemId) => !isRangedWeapon(pack, itemId));
 
-  const buttons: ActionButton[] = [
-    {
+  // `Pick up` is only meaningful while a floor item is underfoot and `Descend`
+  // only while the player is on the stairs tile; both are hidden otherwise so
+  // the bar never offers an action the engine would refuse. `state` may be
+  // undefined before the run loads, so the helpers are guarded by the nullish
+  // checks rather than called unconditionally.
+  const canPickUp = state !== undefined && floorItemAt(state) !== undefined;
+  const canDescend = state !== undefined && isOnStairs(state);
+
+  const buttons: ActionButton[] = [];
+  if (canPickUp) {
+    buttons.push({
       label: 'Pick up',
       accessibilityLabel: 'Pick up the item on your tile',
       onPress: () => dispatch({ type: 'pickup' }),
-    },
-    {
+    });
+  }
+  if (canDescend) {
+    buttons.push({
       label: 'Descend',
       accessibilityLabel: 'Descend to the next level',
       onPress: () => dispatch({ type: 'descend' }),
-    },
-  ];
+    });
+  }
   if (rangedCarried) {
     buttons.push({
       label: targetMode ? 'Cancel' : 'Fire',

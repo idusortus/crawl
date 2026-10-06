@@ -178,6 +178,24 @@ export interface PickupCommand {
   type: 'pickup';
 }
 
+/**
+ * A command to pass a turn without acting, backing the client's "wait turn"
+ * control.
+ *
+ * The player stays on their current tile and the turn advances exactly once, so
+ * the monsters get their turn — the deterministic "wait / pass" action a client
+ * needs to let the world move without committing to a move, attack, or item.
+ *
+ * Like `pickup`, it is deliberately parameterless in v1. The engine reads the
+ * player's tile from state, so any extra parameter beyond `type` is structurally
+ * malformed and degrades to `noop('malformed-command')` without advancing. It
+ * carries no content reference, so it resolves through **both** command entry
+ * points.
+ */
+export interface WaitCommand {
+  type: 'wait';
+}
+
 /** Every command the engine understands. Extended as new actions land. */
 export type Command =
   | MoveCommand
@@ -185,7 +203,8 @@ export type Command =
   | DescendCommand
   | AttackCommand
   | RangedAttackCommand
-  | PickupCommand;
+  | PickupCommand
+  | WaitCommand;
 
 /** Emitted when an entity successfully steps into a new tile. */
 export interface MovedEvent {
@@ -299,6 +318,19 @@ export interface ItemPickedUpEvent {
   entityId: string;
 }
 
+/**
+ * Emitted when the player passes a turn without acting (the client's "wait
+ * turn" control).
+ *
+ * It carries no payload: the fact of the wait is the event itself. It is a
+ * member of the advance matrix, so the command loop runs the monster turn step
+ * after it, while a malformed or refused wait degrades to `noop` (which never
+ * advances). Plain and JSON-clean like every event.
+ */
+export interface WaitedEvent {
+  type: 'waited';
+}
+
 /** Discriminated union of everything a command can report (design D3). */
 export type GameEvent =
   | MovedEvent
@@ -309,7 +341,8 @@ export type GameEvent =
   | AttackedEvent
   | DeathEvent
   | PlayerDiedEvent
-  | ItemPickedUpEvent;
+  | ItemPickedUpEvent
+  | WaitedEvent;
 
 /**
  * The complete, JSON-serializable game state.

@@ -3,7 +3,7 @@
  * `expo-glyph-renderer`, design D3; post-apply review Fix 3; extended by
  * `core-gameplay-loop` task 9.2 / design D10; directional attack removed and a
  * target-mode key + `directionForDelta` added by `mobile-client-playability`
- * tasks 5.2/5.4).
+ * tasks 5.2/5.4; the `.` wait key added by the wait-turn control phase).
  *
  * No React, no React Native, no DOM — this file runs under the node Vitest
  * environment via the src/ui test glob (design D8).
@@ -41,6 +41,12 @@ describe('commandForKey', () => {
   it('maps pickup keys to the pickup command', () => {
     expect(commandForKey('p')).toEqual({ type: 'pickup' });
     expect(commandForKey('g')).toEqual({ type: 'pickup' });
+  });
+
+  it('maps the wait key "." to the wait command and leaves others unhandled', () => {
+    expect(commandForKey('.')).toEqual({ type: 'wait' });
+    expect(commandForKey('b')).toBeUndefined();
+    expect(commandForKey(' ')).toBeUndefined();
   });
 
   it('returns undefined for an unhandled key', () => {

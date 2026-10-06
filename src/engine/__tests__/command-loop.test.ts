@@ -13,6 +13,7 @@ import {
   noop,
   RANGED_DAMAGE_KIND,
   rngFromState,
+  waited,
 } from '../index';
 import { computeFov, exploreInto, DEFAULT_SIGHT_RADIUS } from '../fov';
 import type {
@@ -1654,5 +1655,176 @@ describe('ranged attack command', () => {
       rngFromState(state.rng),
     );
     expect(events).toEqual([noop('unknown-command:ranged-attack')]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wait command: pass a turn, monsters act
+// ---------------------------------------------------------------------------
+
+describe('wait command', () => {
+  /**
+   * An 8x8 open room with the player at (1,1) and a `chase` goblin at (1,6)
+   * (Chebyshev 5, within `DEFAULT_BEHAVIOR_RANGE` 8), so the monster always acts
+   * on a wait turn. Seed `0x5eed`: the goblin takes the single greedy step north
+   * to (1,5), so the advance is observable and attributable.
+   */
+  function waitState(): GameState {
+    const grid = createGrid(
+      Array.from({ length: 8 }, () => new Array<boolean>(8).fill(true)),
+    );
+    const rng = createRng(0x5eed);
+    return {
+      grid,
+      level: { depth: 1, spawn: at(1, 1), stairs: at(7, 7) },
+      explored: new Array<boolean>(grid.width * grid.height).fill(false),
+      entities: [
+        { id: 'player', kind: 'fighter', pos: at(1, 1), hp: 20, attack: 4 },
+        { id: 'goblin', kind: 'goblin', pos: at(1, 6), hp: 5, behavior: 'chase', attack: 2 },
+      ],
+      playerId: 'player',
+      status: 'playing',
+      carriedItemIds: [],
+      rng: { seed: 0x5eed, state: rng.state() },
+      events: [],
+    };
+  }
+
+  /** A minimal valid pack so the pack-aware entry point can be exercised. */
+  function waitPack(): LoadedPack {
+    return loadPack({
+      id: 'wait-test-pack',
+      name: 'Wait Test Pack',
+      version: 2,
+      classes: [
+        { id: 'fighter', name: 'Fighter', glyph: '@', hp: 10, attack: 4 },
+        { id: 'rogue', name: 'Rogue', glyph: 'r', hp: 8, attack: 3 },
+      ],
+      monsters: [
+        { id: 'goblin', name: 'Goblin', glyph: 'g', hp: 5, behavior: 'chase', attack: 2 },
+      ],
+      items: [
+        { id: 'potion', name: 'Potion', glyph: '!', effect: { kind: 'heal', amount: 5 } },
+      ],
+    });
+  }
+
+  it('emits waited and leaves the player on the same tile', () => {
+    const before = waitState();
+    const { state, events } = applyCommand(
+      before,
+      { type: 'wait' },
+      rngFromState(before.rng),
+    );
+
+    // The wait itself is the first event; the monster act may follow.
+    expect(events[0]).toEqual(waited());
+    expect(events.some((e) => e.type === 'waited')).toBe(true);
+    // The player did not move; the input is never mutated.
+    expect(state.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+    expect(before.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+  });
+
+  it('advances monsters: the chasing goblin acts on the wait turn', () => {
+    const before = waitState();
+    const { state, events } = applyCommand(
+      before,
+      { type: 'wait' },
+      rngFromState(before.rng),
+    );
+
+    // The goblin took its greedy step toward the player: (1,6) -> (1,5).
+    expect(state.entities.find((e) => e.id === 'goblin')?.pos).toEqual(at(1, 5));
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'moved' &&
+          (e as { entityId: string }).entityId === 'goblin',
+      ),
+    ).toBe(true);
+  });
+
+  it('is deterministic: the same seed + commands reproduce identical state', () => {
+    const run = (): GameState => {
+      let state = waitState();
+      state = applyCommand(state, { type: 'wait' }, rngFromState(state.rng)).state;
+      state = applyCommand(state, { type: 'wait' }, rngFromState(state.rng)).state;
+      return state;
+    };
+
+    const a = run();
+    const b = run();
+    expect(b.events).toEqual(a.events);
+    expect(b).toEqual(a);
+  });
+
+  it('on a dead run degrades to noop(run-over) with no advance', () => {
+    const before = waitState();
+    const dead: GameState = { ...before, status: 'dead' };
+    const { state, events } = applyCommand(dead, { type: 'wait' }, rngFromState(dead.rng));
+
+    expect(events).toEqual([noop('run-over')]);
+    expect(state).toEqual({ ...dead, events: [...dead.events, noop('run-over')] });
+  });
+
+  it('a malformed wait (extra key) is malformed-command and does not advance', () => {
+    const before = waitState();
+    const { state, events } = applyCommand(
+      before,
+      { type: 'wait', extra: true } as unknown as Command,
+      rngFromState(before.rng),
+    );
+
+    expect(events).toEqual([noop('malformed-command')]);
+    // No monster acted: the goblin is still at its starting tile.
+    expect(state.entities.find((e) => e.id === 'goblin')?.pos).toEqual(at(1, 6));
+    expect(state.entities).toEqual(before.entities);
+    expect(state.rng).toEqual(before.rng);
+  });
+
+  it('a wait with no player entity is noop(no-player-entity) and does not advance', () => {
+    const before = waitState();
+    const withoutPlayer: GameState = {
+      ...before,
+      entities: before.entities.filter((e) => e.id !== before.playerId),
+    };
+    const { state, events } = applyCommand(
+      withoutPlayer,
+      { type: 'wait' },
+      rngFromState(withoutPlayer.rng),
+    );
+
+    expect(events).toEqual([noop('no-player-entity')]);
+    // `noop` is not in the advance matrix, so the goblin holds its tile and the
+    // RNG is untouched.
+    expect(state.entities.find((e) => e.id === 'goblin')?.pos).toEqual(at(1, 6));
+    expect(state.rng).toEqual(withoutPlayer.rng);
+  });
+
+  it('resolves through applyCommandWithPack too, advancing monsters', () => {
+    const before = waitState();
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'wait' },
+      rngFromState(before.rng),
+      waitPack(),
+    );
+
+    expect(events[0]).toEqual(waited());
+    expect(state.entities.find((e) => e.id === 'player')?.pos).toEqual(at(1, 1));
+    expect(state.entities.find((e) => e.id === 'goblin')?.pos).toEqual(at(1, 5));
+  });
+
+  it('a malformed wait through applyCommandWithPack is malformed-command', () => {
+    const before = waitState();
+    const { state, events } = applyCommandWithPack(
+      before,
+      { type: 'wait', extra: true } as unknown as Command,
+      rngFromState(before.rng),
+      waitPack(),
+    );
+
+    expect(events).toEqual([noop('malformed-command')]);
+    expect(state.entities.find((e) => e.id === 'goblin')?.pos).toEqual(at(1, 6));
   });
 });

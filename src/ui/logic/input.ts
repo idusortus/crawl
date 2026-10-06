@@ -12,8 +12,8 @@
  *
  * Three flavors are produced:
  *  - {@link commandForKey} maps a key to an engine `Command` (move, pickup,
- *    descend) — all of which flow through `dispatch`. There is deliberately no
- *    directional attack mapping: melee is bump-to-attack (design D2).
+ *    descend, wait) — all of which flow through `dispatch`. There is deliberately
+ *    no directional attack mapping: melee is bump-to-attack (design D2).
  *  - {@link actionForKey} maps a key to a named non-command action (save / resume
  *    / new-run / toggle-target-mode), which the client handles through its save
  *    path or presentation state. Keeping actions distinct from commands means the
@@ -39,6 +39,9 @@ export const DESCEND_KEYS: ReadonlySet<string> = new Set(['Enter', '>']);
 /** Keys that resolve to a pickup command. */
 export const PICKUP_KEYS: ReadonlySet<string> = new Set(['p', 'g']);
 
+/** Wait keys that resolve to a wait command (`.` is the roguelike pass key). */
+export const WAIT_KEYS: ReadonlySet<string> = new Set(['.']);
+
 /** A non-command client action the keyboard can trigger. */
 export type InputAction =
   | 'save'
@@ -60,7 +63,7 @@ export const ACTION_KEYS: Readonly<Record<string, InputAction>> = {
  * isolation from the DOM.
  *
  * Arrows always move; there is no modifier mapping to a directional attack (that
- * control was removed — melee is bump-to-attack).
+ * control was removed — melee is bump-to-attack). `.` waits a turn.
  */
 export function commandForKey(key: string): Command | undefined {
   const direction = ARROW_DIRECTIONS[key];
@@ -72,6 +75,9 @@ export function commandForKey(key: string): Command | undefined {
   }
   if (DESCEND_KEYS.has(key)) {
     return { type: 'descend' };
+  }
+  if (WAIT_KEYS.has(key)) {
+    return { type: 'wait' };
   }
   return undefined;
 }

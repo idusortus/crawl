@@ -52,6 +52,8 @@ export type {
   RangedAttackCommand,
   RngState,
   UseItemCommand,
+  WaitCommand,
+  WaitedEvent,
 } from './types';
 
 // Command loop.
@@ -145,6 +147,7 @@ export {
   moved,
   noop,
   playerDied,
+  waited,
 } from './events';
 
 // Field of view — pure, derived (design D4). Visibility is never stored; the

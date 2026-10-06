@@ -132,7 +132,8 @@ export class UnknownSaveVersionError extends Error {
  * `ranged-attack` added by change `mobile-client-playability`).
  *
  * Supplying the pack restores the correct path; a remainder of only
- * content-free commands (`move`/`attack`/`pickup`) still replays without a pack,
+ * content-free commands (`move`/`attack`/`pickup`/`wait`) still replays without
+ * a pack,
  * and `deserializeSave` (inspection) is untouched.
  */
 export class PackRequiredForReplayError extends Error {
@@ -285,7 +286,7 @@ function contentDependentTypes(commands: Command[]): string[] {
  * naming the offending types **before applying anything**, rather than silently
  * producing a state that diverges from the pack-aware run. A pack, an empty
  * remainder (`appliedCount === commands.length`), and a remainder of only
- * content-free commands (`move`/`attack`/`pickup`) replay unchanged.
+ * content-free commands (`move`/`attack`/`pickup`/`wait`) replay unchanged.
  *
  * `appliedCount` is clamped defensively: a negative value replays the whole log
  * from the start, and a value beyond the log length replays nothing. A

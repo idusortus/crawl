@@ -41,6 +41,7 @@ import {
   moved,
   noop,
   playerDied,
+  waited,
 } from './events';
 import { resolveEffect } from './effects';
 import type { LoadedPack } from './pack';
@@ -517,6 +518,29 @@ function applyPickup(state: GameState, rng: Rng): CommandResult {
 }
 
 /**
+ * Resolves a `wait` command (the client's "wait turn" control): the player
+ * passes a turn without acting.
+ *
+ * The player entity is never moved and no world-state override is supplied, so
+ * `commit` carries `entities`, `grid`, `level`, `explored`, `status`, and
+ * `carriedItemIds` through unchanged. A single `waited` event is emitted; the
+ * shared `advanceTurn` wrapper then runs the monster step because `waited` is a
+ * member of the advance matrix. A missing player entity is a
+ * `noop('no-player-entity')` (consistent with `move`/`attack`/`pickup`) rather
+ * than an advance with no actor.
+ *
+ * The input state is never mutated: `commit` returns a new object and nothing
+ * here writes to the input.
+ */
+function applyWait(state: GameState, rng: Rng): CommandResult {
+  const actor = entityById(state.entities, state.playerId);
+  if (actor === undefined) {
+    return commit(state, rng, [noop('no-player-entity')]);
+  }
+  return commit(state, rng, [waited()]);
+}
+
+/**
  * Resolves a `use-item` command against a loaded pack (change
  * `content-packs-v1`, D6/D7; consumption added by change `core-gameplay-loop`,
  * task 6.2 / design D7).
@@ -726,7 +750,8 @@ function applyDescend(
  * A command's world-changing events signal whether the turn step runs:
  *
  *  - `moved` (move-empty / walk onto a feature), `item-used` (use-item success),
- *    and `item-picked-up` (pickup success) always advance.
+ *    `item-picked-up` (pickup success), and `waited` (a deliberate wait / pass)
+ *    always advance.
  *  - `attacked` (bump-attack or an explicit attack hit) advances **unless** it
  *    also killed the player — an `attacked` targeting the player is a monster's
  *    attack, never the player's own, so a player-death outcome must not advance.
@@ -747,6 +772,7 @@ const ADVANCING_EVENT_TYPES = new Set<GameEvent['type']>([
   'item-used',
   'item-picked-up',
   'death',
+  'waited',
 ]);
 
 /**
@@ -869,6 +895,33 @@ function resolvePickup(
 }
 
 /**
+ * The structural boundary for `wait` shared by both entry points.
+ *
+ * `wait` takes no parameters, so any key beyond `type` is a malformed command
+ * (matching the pickup/move "extra params → malformed" rule). A malformed wait
+ * degrades to `noop('malformed-command')` and never advances the turn, because
+ * `noop` is not in the advance matrix. A well-formed wait resolves the real
+ * `applyWait` through the shared `advanceTurn` wrapper, so its `waited` outcome
+ * runs the monster step per the D5 matrix. The terminal-permadeath gate still
+ * applies first inside `advanceTurn`, so a wait on a dead run is
+ * `noop('run-over')` like every other command.
+ */
+function resolveWait(
+  state: GameState,
+  rng: Rng,
+  command: unknown,
+): CommandResult {
+  const record = command as Record<string, unknown>;
+  const extraKeys = Object.keys(record).filter((key) => key !== 'type');
+  if (extraKeys.length > 0) {
+    return advanceTurn(state, rng, () =>
+      commit(state, rng, [noop('malformed-command')]),
+    );
+  }
+  return advanceTurn(state, rng, () => applyWait(state, rng));
+}
+
+/**
  * The single way to advance the game for content-free commands.
  *
  * Accepts the current `state`, a `command`, and the injected `rng`, and returns
@@ -908,6 +961,14 @@ export function applyCommand(
   // degrades to `malformed-command`; a well-formed one resolves the real pickup.
   if ((command as { type: string }).type === 'pickup') {
     return resolvePickup(state, rng, command);
+  }
+
+  // `wait` is parameterless like `pickup`, so its malformed-parameter posture
+  // (any key beyond `type`) is checked structurally before the `switch`. A
+  // malformed wait degrades to `malformed-command`; a well-formed one advances
+  // the turn with a `waited`.
+  if ((command as { type: string }).type === 'wait') {
+    return resolveWait(state, rng, command);
   }
 
   switch (command.type) {
@@ -990,6 +1051,13 @@ export function applyCommandWithPack(
   // is content-free, so both entry points resolve it identically.
   if ((command as { type: string }).type === 'pickup') {
     return resolvePickup(state, rng, command);
+  }
+
+  // `wait` is likewise content-free and parameterless, so both entry points
+  // resolve it identically: malformed → `malformed-command`, well-formed →
+  // `applyWait` advancing the turn with a `waited`.
+  if ((command as { type: string }).type === 'wait') {
+    return resolveWait(state, rng, command);
   }
 
   switch (command.type) {

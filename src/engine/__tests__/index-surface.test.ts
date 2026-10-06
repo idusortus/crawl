@@ -56,6 +56,7 @@ import {
   UnknownGeneratorIdError,
   UnknownSaveVersionError,
   validatePack,
+  waited,
 } from '@engine/index';
 import type {
   AppliedEffect,
@@ -98,6 +99,8 @@ import type {
   RngState,
   SaveEnvelope,
   UseItemCommand,
+  WaitCommand,
+  WaitedEvent,
 } from '@engine/index';
 
 // The fantasy pack lives OUTSIDE `src/engine` and is imported directly from its
@@ -137,14 +140,21 @@ describe('public engine surface (@engine)', () => {
     expect(ev.type).toBe('moved');
     expect(result.state.entities[0].pos).toEqual({ x: 1, y: 0 });
     expect(result.state.events).toHaveLength(1);
+
+    // The parameterless `wait` command is on the public surface and resolves to
+    // a real runtime `waited` event through the content-free `applyCommand`.
+    const waitCommand: WaitCommand = { type: 'wait' };
+    const waitResult = applyCommand(state, waitCommand, rngFromState(state.rng));
+    expect(waitResult.events.some((e) => e.type === 'waited')).toBe(true);
   });
 
   it('re-exports the event constructors and log helper', () => {
     const m: MovedEvent = moved('p', { x: 0, y: 0 }, { x: 1, y: 0 });
     const b: BlockedEvent = blocked('p', 'east');
     const n: NoopEvent = noop('r');
-    const log: GameEvent[] = appendEvents([], [m, b, n]);
-    expect(log.map((e) => e.type)).toEqual(['moved', 'blocked', 'noop']);
+    const w: WaitedEvent = waited();
+    const log: GameEvent[] = appendEvents([], [m, b, n, w]);
+    expect(log.map((e) => e.type)).toEqual(['moved', 'blocked', 'noop', 'waited']);
   });
 
   it('re-exports the RNG helpers (types + bounded draw)', () => {

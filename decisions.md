@@ -735,3 +735,16 @@
 **Revisit:** Never as a design question for the UI wiring; if target mode later needs to drive keyboard movement or multi-target selection, revisit the render-phase reset and the ref-based guard together. If a render-test environment is added later, the `ranged.test.ts` integration test can be complemented by a component test.
 
 **Verification (recorded):** `npm run typecheck` 0, `npm test` **27 files / 489 tests** (was 475; +14 in `ranged.test.ts`), `npm run lint` 0. Browser check not possible here: OpenChamber has no desktop page-control bridge and `react-native-web` is not installed, so the arm→tap→fire path was verified by unit tests (client decision + engine acceptance) and inspection, not by rendering.
+
+---
+
+## 2026-10-05 — Wait-turn command added to the engine; UI gates controls by player position
+
+**Context:** A user request for a "wait turn" button in the center of the D-pad, plus showing a short description when standing on an object and hiding buttons that are not applicable to the player's position. The engine had no way to pass a turn, so "player stays, monsters act" required an engine addition — this crossed the engine/UI boundary, unlike a purely presentational change.
+
+**Choice:** Add a deterministic `{ type: 'wait' }` command to the engine (`types.ts`/`commands.ts`/`events.ts`/`index.ts`) that leaves the player in place and advances monsters exactly once, via a new advancing `waited` event added to the turn-advance set. Handle a malformed `wait` structurally like `pickup`, and resolve it through both `applyCommand` and `applyCommandWithPack`. On the client, keep presentation logic in pure `src/ui/logic` helpers (`objects.ts`: floor-item/stairs detection + description), put the wait control in the D-pad's center cell, and gate Pick up / Descend on those helpers. Item descriptions use the optional pack `description` with a generic fallback (no current pack sets one).
+
+**Trade-offs:** Adds a new engine event type (`waited`) rather than overloading `noop` (which by contract never advances), so it grows engine surface for a client feature. The component-level gating is not render-tested (no RN render-test environment), so only the pure helpers are unit-tested.
+
+**Revisit:** Add component tests for the ActionBar/ObjectInfo gating if a render-test environment is ever added. If other turn-passing abilities (defend/rest) land, generalize the `wait` command rather than adding parallel pass-turn commands.
+

@@ -6,9 +6,10 @@
  *
  * A development convenience for the web target: arrow keys map to the four move
  * commands, `p`/`g` to pickup, Enter (or `>`, the roguelike descend key) to
- * descend, `f` to toggle ranged target mode, and `s`/`r`/`n` to the save /
- * resume / new-run client actions. Command keys resolve through `dispatch`;
- * action keys invoke the matching callback. The hook never touches state.
+ * descend, `.` to wait a turn, `f` to toggle ranged target mode, and `s`/`r`/`n`
+ * to the save / resume / new-run client actions. Command keys resolve through
+ * `dispatch`; action keys invoke the matching callback. The hook never touches
+ * state.
  *
  * There is no keyboard attack: directional melee was removed along with the
  * on-screen attack row (melee is bump-to-attack). The target-mode callback is

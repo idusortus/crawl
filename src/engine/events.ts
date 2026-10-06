@@ -22,6 +22,7 @@ import type {
   NoopEvent,
   PlayerDiedEvent,
   Position,
+  WaitedEvent,
 } from './types';
 
 /** Creates a `moved` event for a successful step. */
@@ -136,6 +137,18 @@ export function itemPickedUp(
   entityId: string,
 ): ItemPickedUpEvent {
   return { type: 'item-picked-up', actorId, itemId, entityId };
+}
+
+/**
+ * Creates a `waited` event reporting that the player passed a turn without
+ * acting (the client's "wait turn" control).
+ *
+ * It carries no payload — the fact of the wait is the event itself — making it
+ * the minimal companion to the `wait` command. Plain and JSON-clean like every
+ * other event.
+ */
+export function waited(): WaitedEvent {
+  return { type: 'waited' };
 }
 
 /**

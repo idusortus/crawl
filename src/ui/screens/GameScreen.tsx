@@ -36,6 +36,7 @@ import { Dpad } from '../components/Dpad';
 import { GameOver } from '../components/GameOver';
 import { Hud } from '../components/Hud';
 import { MapView } from '../components/MapView';
+import { ObjectInfo } from '../components/ObjectInfo';
 import { isTerminal } from '../logic/glyphs';
 import { hasRangedWeapon } from '../logic/ranged';
 import { useKeyboardInput } from '../hooks/useKeyboardInput';
@@ -110,6 +111,7 @@ export function GameScreen() {
       ]}
     >
       <Hud />
+      <ObjectInfo />
       <View style={styles.mapArea}>
         <MapView targetMode={targetMode} onExitTargetMode={exitTargetMode} />
       </View>

@@ -21,10 +21,15 @@
  * A single `Pressable` wrapper handles taps: the touch location plus the applied
  * per-axis offset is converted to a tile. In normal play a cardinal-adjacent tap
  * dispatches a `move` (the engine bumps-to-attack when the tile is occupied) and
- * a non-adjacent tap does nothing. In ranged target mode a tap on a **visible
+ * a non-adjacent tap does nothing; while auto-travel is active an optional
+ * `interceptCommand` swallows that move so the tap cancels travel instead of
+ * leaving the planned route (post-apply review Fix 2). In ranged target mode a tap on a **visible
  * living monster** (not the player) dispatches a `ranged-attack` at that tile and
  * exits target mode; any other tap exits target mode without dispatching (task
- * 6.3; design D7). The target test is the pure `rangedTargetAt` helper so it is
+ * 6.3; design D7). In travel-target mode a tap on an explored, passable,
+ * unoccupied tile starts auto-travel to it and any other tap ends travel mode
+ * without dispatching (change `travel-and-repeat-move`, task 4.3). The target
+ * tests are the pure `rangedTargetAt`/`isTravelDestination` helpers so they are
  * unit-tested without a renderer.
  *
  * Tile resolution is delegated to the pure `tileRender` helper, so this
@@ -42,11 +47,12 @@ import {
   entityById,
   forEachCoord,
 } from '@engine';
+import type { Command, Position } from '@engine';
 
 import { useGameContext } from '../providers/GameProvider';
 import { appliedAxisOffset, axisOffset } from '../logic/camera';
 import { tileRender } from '../logic/glyphs';
-import { directionForDelta } from '../logic/input';
+import { directionForDelta, isTravelDestination } from '../logic/input';
 import { rangedTargetAt } from '../logic/ranged';
 import { colors } from '../theme/colors';
 
@@ -71,9 +77,33 @@ export interface MapViewProps {
   targetMode?: boolean;
   /** Invoked after a ranged shot is dispatched or a non-target tap cancels. */
   onExitTargetMode?: () => void;
+  /**
+   * True while travel-target mode is active; a tap then selects a destination
+   * instead of moving (change `travel-and-repeat-move`, design D5; task 4.3).
+   */
+  travelMode?: boolean;
+  /** Starts auto-travel to a tapped destination and exits travel-target mode. */
+  onStartTravel?: (destination: Position) => void;
+  /** Ends travel-target mode without dispatching (an invalid destination tap). */
+  onExitTravelMode?: () => void;
+  /**
+   * Consulted before dispatching a normal-mode cardinal move; returns `true`
+   * when the tap was swallowed (auto-travel cancelled it), so the tap dispatches
+   * nothing (change `travel-and-repeat-move`, post-apply review Fix 2). Without
+   * this, a cardinal map tap during auto-travel would move off the planned route
+   * and desync the scheduler.
+   */
+  interceptCommand?: (command: Command) => boolean;
 }
 
-export function MapView({ targetMode = false, onExitTargetMode }: MapViewProps) {
+export function MapView({
+  targetMode = false,
+  onExitTargetMode,
+  travelMode = false,
+  onStartTravel,
+  onExitTravelMode,
+  interceptCommand,
+}: MapViewProps) {
   const { state, pack, dispatch } = useGameContext();
 
   // The visible viewport size, captured from `onLayout` on the clipped outer
@@ -163,6 +193,29 @@ export function MapView({ targetMode = false, onExitTargetMode }: MapViewProps) 
       y: Math.floor((locationY - appliedY) / tileSize),
     };
 
+    if (travelMode) {
+      // Travel mode: a tap on an explored, passable, unoccupied tile sets the
+      // destination and starts auto-travel through the shared command path; any
+      // other tap (unexplored, non-passable, occupied, or outside the grid)
+      // dispatches nothing and ends travel-target mode (task 4.3; design D5
+      // assumption a). The pure predicate mirrors `planTravel`'s destination
+      // acceptance; the planner stays the authority on whether a route exists.
+      if (
+        isTravelDestination(
+          state.grid,
+          state.explored,
+          state.entities,
+          state.playerId,
+          tile,
+        )
+      ) {
+        onStartTravel?.(tile);
+      } else {
+        onExitTravelMode?.();
+      }
+      return;
+    }
+
     if (targetMode) {
       // Target mode: a tap on a visible living monster (not the player) fires at
       // that tile — the engine stays the range/visibility authority and will
@@ -185,13 +238,16 @@ export function MapView({ targetMode = false, onExitTargetMode }: MapViewProps) 
     // Normal mode: a cardinal-adjacent tap moves (the engine bumps-to-attack if
     // the tile is occupied). A non-adjacent tap dispatches nothing, and so does
     // a tap outside the grid — e.g. in the centring margin when the fitted map
-    // is centred (design D7).
+    // is centred (design D7). While auto-travel is active, a cardinal tap is
+    // swallowed by `interceptCommand` (it cancels travel) so it cannot move off
+    // the planned route and desync the scheduler (post-apply review Fix 2).
     const inBounds =
       tile.x >= 0 && tile.x < width && tile.y >= 0 && tile.y < height;
     if (!inBounds) return;
 
     const direction = directionForDelta(player.pos, tile);
     if (direction !== undefined) {
+      if (interceptCommand?.({ type: 'move', direction }) === true) return;
       dispatch({ type: 'move', direction });
     }
   };

@@ -45,7 +45,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { applyCommandWithPack, loadPack, rngFromState } from '@engine';
-import type { Command, GameState, LoadedPack } from '@engine';
+import type { Command, CommandResult, GameState, LoadedPack } from '@engine';
 
 import { fantasyPack } from '../../packs/fantasy';
 import { createInitialState } from '../state/createInitialState';
@@ -95,8 +95,20 @@ export interface UseGameResult {
   state: GameState | undefined;
   /** The loaded content pack, or `undefined` if loading failed. */
   pack: LoadedPack | undefined;
-  /** Applies a command immutably, advancing the game (no-op before load). */
-  dispatch: (command: Command) => void;
+  /**
+   * Applies a command immutably, advancing the game (no-op before load), and
+   * returns the engine's synchronous `CommandResult` (`{ state, events }`) — or
+   * `undefined` when the pack/state has not loaded yet.
+   *
+   * The result is returned because the travel and hold-repeat schedulers need the
+   * authoritative outcome of the step they just dispatched (a `blocked` step, an
+   * attack/damage, a `level-changed`, the terminal `status`, the next player
+   * tile, etc.) to decide whether to continue. React state updates are async, so
+   * reading `state` after `dispatch` can observe the previous render; the returned
+   * result is the exact synchronous outcome and avoids that race. Callers that
+   * ignore the return are unaffected.
+   */
+  dispatch: (command: Command) => CommandResult | undefined;
   /**
    * Saves the current run through the engine's `serializeSave` path (the full
    * state + full command log + `appliedCount` cursor) to durable storage. The
@@ -127,6 +139,16 @@ export interface UseGameResult {
   saveError: GameError | undefined;
   /** True for a short spell after an explicit successful save. */
   savedIndicator: boolean;
+  /**
+   * A monotonic run-generation counter: `0` for the initial run, incremented
+   * every time the live run is replaced (`resume`, `newRun`). Client schedulers
+   * whose state is derived from one run (auto-travel, the D-pad hold-repeat) key
+   * on this so a run swap cancels them. Neither `state` identity (changes on
+   * every dispatch) nor `state.rng.seed` (a same-run resume preserves it)
+   * signals a replacement; this epoch does (change `travel-and-repeat-move`,
+   * post-apply review Fix 1; `decisions.md`).
+   */
+  runEpoch: number;
 }
 
 /** The outcome of the one-time startup load. */
@@ -191,6 +213,12 @@ export function useGame(seed?: number): UseGameResult {
   // no clock or randomness, and is never part of stored content.
   const [savedIndicator, setSavedIndicator] = useState(false);
 
+  // A monotonic run-generation counter, bumped whenever the live run is
+  // replaced (`resume`, `newRun`). Client schedulers key on it so a run swap
+  // cancels in-flight travel/repeat work (change `travel-and-repeat-move`,
+  // post-apply review Fix 1). The initial run is epoch `0`.
+  const [runEpoch, setRunEpoch] = useState(0);
+
   // The command log and cursor for the *current* run. They are a ref, not state:
   // appending to them must not trigger a re-render, and a save reads both plus
   // the live state at save time so they can never drift apart.
@@ -254,7 +282,7 @@ export function useGame(seed?: number): UseGameResult {
     );
   }, []);
 
-  const dispatch = useCallback((command: Command) => {
+  const dispatch = useCallback((command: Command): CommandResult | undefined => {
     // Dispatching is a user action: clear the transient "Saved" acknowledgement
     // so the next save (or auto-save) can show it again.
     setSavedIndicator(false);
@@ -264,7 +292,7 @@ export function useGame(seed?: number): UseGameResult {
     // (in the event handler) keeps both the state transition and the log/cursor
     // single-shot and replay-safe. `latestRunRef` mirrors the committed run.
     const current = latestRunRef.current;
-    if (current.state === undefined || current.pack === undefined) return;
+    if (current.state === undefined || current.pack === undefined) return undefined;
     const result = applyCommandWithPack(
       current.state,
       command,
@@ -275,6 +303,9 @@ export function useGame(seed?: number): UseGameResult {
     appliedRef.current = logRef.current.length;
     latestRunRef.current = { state: result.state, pack: current.pack };
     setStartup((prev) => ({ ...prev, state: result.state }));
+    // Return the synchronous outcome so schedulers (travel/hold-repeat) can
+    // inspect the authoritative `{ state, events }` without racing React state.
+    return result;
   }, []);
 
   const save = useCallback(() => {
@@ -306,6 +337,8 @@ export function useGame(seed?: number): UseGameResult {
       commitRun(run.state, startup.pack);
       setStartup((prev) => ({ ...prev, state: run.state, error: undefined }));
       setSaveError(undefined);
+      // A replaced run is a cancellation event for every client scheduler.
+      setRunEpoch((epoch) => epoch + 1);
     } catch (caught) {
       setSaveError(asError(caught));
     }
@@ -331,6 +364,8 @@ export function useGame(seed?: number): UseGameResult {
       state: nextState,
       error: undefined,
     });
+    // A replaced run is a cancellation event for every client scheduler.
+    setRunEpoch((epoch) => epoch + 1);
   }, [startup, commitRun]);
 
   // One-time hydration (design D3/D4): load any stored save and expose it to
@@ -394,5 +429,6 @@ export function useGame(seed?: number): UseGameResult {
     error: startup.error,
     saveError,
     savedIndicator,
+    runEpoch,
   };
 }

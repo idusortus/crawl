@@ -21,9 +21,18 @@
  *  - {@link directionForDelta} resolves a tap's `from`/`to` tile delta to a
  *    cardinal `Direction` (or `undefined`), so map taps are testable without a
  *    renderer.
+ *  - {@link isTravelCancellingCommand} classifies a resolved command as a
+ *    travel-cancelling input (a direction `move` or a `wait`), the one
+ *    definition shared by the keyboard handler, the D-pad, and the travel
+ *    scheduler (change `travel-and-repeat-move`, design D5; task 1.5).
+ *  - {@link stepPosition} and {@link isTravelDestination} support the travel
+ *    scheduler and the travel-mode map tap (change `travel-and-repeat-move`,
+ *    tasks 4.3/4.4): the former names the tile a planned step lands on, the
+ *    latter is the tap's "is this a legal destination?" test.
  */
 
-import type { Command, Direction, Position } from '@engine';
+import { attackTargetAt, inBounds, indexOf, isPassable } from '@engine';
+import type { Command, Direction, Entity, Grid, Position } from '@engine';
 
 /** Maps an arrow key name to its move direction. */
 export const ARROW_DIRECTIONS: Readonly<Record<string, Direction>> = {
@@ -91,6 +100,23 @@ export function actionForKey(key: string): InputAction | undefined {
 }
 
 /**
+ * True when `command` is a travel-cancelling input that is **swallowed** while
+ * auto-travel is active (change `travel-and-repeat-move`, design D5; task 1.5):
+ * a directional `move` or a `wait`. Such a press cancels travel and dispatches
+ * no command, so it costs no turn. Every other command (pickup/descend/use-item/
+ * attack/ranged-attack) and `undefined` are not travel-cancelling.
+ *
+ * Kept beside {@link commandForKey} so the keyboard handler, the on-screen
+ * controls, and the travel scheduler share one definition; the existing
+ * `commandForKey`/`actionForKey` mappings are unchanged.
+ */
+export function isTravelCancellingCommand(
+  command: Command | undefined,
+): boolean {
+  return command?.type === 'move' || command?.type === 'wait';
+}
+
+/**
  * Resolves the cardinal {@link Direction} from `from` to `to` when `to` is
  * orthogonally adjacent to `from`, or `undefined` otherwise.
  *
@@ -106,4 +132,68 @@ export function directionForDelta(from: Position, to: Position): Direction | und
   if (dx === 1 && dy === 0) return 'east';
   if (dx === -1 && dy === 0) return 'west';
   return undefined;
+}
+
+/** The cardinal unit delta for a `Direction`; north is `-y`, matching `move`. */
+const DIRECTION_STEP: Readonly<Record<Direction, Position>> = {
+  north: { x: 0, y: -1 },
+  east: { x: 1, y: 0 },
+  south: { x: 0, y: 1 },
+  west: { x: -1, y: 0 },
+};
+
+/**
+ * The tile one cardinal step from `from` in `direction` (change
+ * `travel-and-repeat-move`, task 4.4).
+ *
+ * The travel scheduler uses this to name the tile its next planned step would
+ * land on, so `travelStopReason` can test that tile for the stairs or a lost
+ * route without a second copy of the delta table. Pure, so it is unit-tested.
+ */
+export function stepPosition(from: Position, direction: Direction): Position {
+  const delta = DIRECTION_STEP[direction];
+  return { x: from.x + delta.x, y: from.y + delta.y };
+}
+
+/**
+ * The tile the next planned travel step would land on, or `undefined` when the
+ * route is exhausted or the player's position is unknown (change
+ * `travel-and-repeat-move`, post-apply review Fix 7).
+ *
+ * The travel scheduler derives `travelStopReason`'s `nextStep` from the player's
+ * position *after* a step plus the following route direction. Extracting that
+ * combination here makes it a pure, node-testable function instead of an inline
+ * ternary in the renderer; `stepPosition` remains its single-step primitive.
+ */
+export function nextStepPosition(
+  from: Position | undefined,
+  direction: Direction | undefined,
+): Position | undefined {
+  if (from === undefined || direction === undefined) return undefined;
+  return stepPosition(from, direction);
+}
+
+/**
+ * True when `pos` is a legal auto-travel destination: in bounds, explored,
+ * passable, and free of any living entity other than the player (change
+ * `travel-and-repeat-move`, design D3/D5; task 4.3).
+ *
+ * This is the travel-mode map tap's "is this tile a destination?" test, and it
+ * mirrors `planTravel`'s destination acceptance exactly so the tap handler and
+ * the planner cannot disagree. It does **not** test reachability — `planTravel`
+ * stays the authority for whether a route exists. The player's own tile is
+ * accepted (it is the empty-route start exception), matching the planner.
+ */
+export function isTravelDestination(
+  grid: Grid,
+  explored: readonly boolean[],
+  entities: Entity[],
+  playerId: string,
+  pos: Position,
+): boolean {
+  if (!inBounds(grid, pos)) return false;
+  if (explored[indexOf(grid, pos)] !== true) return false;
+  if (!isPassable(grid, pos)) return false;
+  const occupant = attackTargetAt(entities, pos);
+  return occupant === undefined || occupant.id === playerId;
 }

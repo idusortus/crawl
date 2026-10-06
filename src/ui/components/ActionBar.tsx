@@ -28,6 +28,12 @@
  * ephemeral target mode owned by `GameScreen` (design D7). It is hidden
  * otherwise, so it never clutters the controls when unusable.
  *
+ * The travel control (change `travel-and-repeat-move`, tasks 4.1/5.2) is always
+ * rendered: it toggles the ephemeral travel-target mode, and a second press
+ * cancels the mode and any travel in progress without dispatching a command. Its
+ * `active` flag highlights it while the mode is on **or** auto-travel is running
+ * (post-apply review Fix 8), mirroring the ranged Fire/Cancel control.
+ *
  * Save feedback (change `ui-fit-and-persistence`, design D3): a successful save
  * flips the hook's presentation-only `savedIndicator`, and a storage/hydration
  * failure lands in the separate non-fatal `saveError` channel. Both are shown as
@@ -60,9 +66,26 @@ export interface ActionBarProps {
   targetMode: boolean;
   /** Toggles ranged target mode; pressing again cancels it. */
   onToggleTargetMode: () => void;
+  /** Whether travel-target mode is currently active (presentation-only). */
+  travelMode: boolean;
+  /** Toggles travel-target mode; pressing again cancels the mode and any travel. */
+  onToggleTravelMode: () => void;
+  /**
+   * Whether auto-travel is currently running (change `travel-and-repeat-move`,
+   * post-apply review Fix 8). `travelMode` alone is not enough: `startTravel`
+   * exits travel-target mode as soon as a destination is chosen, so while the
+   * player is auto-walking the control would otherwise show no active state.
+   */
+  travelInProgress: boolean;
 }
 
-export function ActionBar({ targetMode, onToggleTargetMode }: ActionBarProps) {
+export function ActionBar({
+  targetMode,
+  onToggleTargetMode,
+  travelMode,
+  onToggleTravelMode,
+  travelInProgress,
+}: ActionBarProps) {
   const { dispatch, save, resume, hasSave, state, pack, savedIndicator, saveError } =
     useGameContext();
 
@@ -105,6 +128,20 @@ export function ActionBar({ targetMode, onToggleTargetMode }: ActionBarProps) {
       active: targetMode,
     });
   }
+  // The travel control is always available: it toggles travel-target mode and,
+  // on a second press, cancels the mode and any travel in progress without
+  // dispatching (change `travel-and-repeat-move`, design D5; tasks 4.1/5.2). It
+  // is highlighted while the mode is active OR auto-travel is running, so its
+  // state is unambiguous after `startTravel` exits the mode (post-apply review
+  // Fix 8); pressing it still cancels travel without dispatching.
+  buttons.push({
+    label: travelMode ? 'Cancel' : 'Travel',
+    accessibilityLabel: travelMode
+      ? 'Cancel travel targeting'
+      : 'Enter travel targeting mode',
+    onPress: onToggleTravelMode,
+    active: travelMode || travelInProgress,
+  });
   buttons.push({
     label: 'Save',
     accessibilityLabel: 'Save the current run',

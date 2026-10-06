@@ -20,6 +20,12 @@
  * effect returns a no-op cleanup and no listener is ever attached. `window` is
  * only read inside the web branch, so a native bundle never evaluates it and the
  * hook cannot crash off-web (design D3).
+ *
+ * While auto-travel is active, an optional `interceptCommand` is consulted before
+ * dispatching a resolved command: a travel-cancelling arrow/`.` press cancels
+ * travel and is swallowed (no command dispatched), so it costs no turn (change
+ * `travel-and-repeat-move`, design D5; task 5.1). No hold behavior is added —
+ * the web keyboard still repeats only through the OS.
  */
 
 import { useEffect } from 'react';
@@ -44,6 +50,13 @@ export interface KeyboardHandlers {
    * press with no handler wired is a no-op.
    */
   onToggleTargetMode?: () => void;
+  /**
+   * Consulted before dispatching a resolved command; returns `true` when the
+   * input was swallowed (auto-travel cancelled it), so no command is dispatched
+   * (change `travel-and-repeat-move`, design D5; task 5.1). Optional so a call
+   * site that does not need it typechecks.
+   */
+  interceptCommand?: (command: Command) => boolean;
 }
 
 /**
@@ -54,7 +67,8 @@ export interface KeyboardHandlers {
  * @returns Nothing; the effect attaches and cleans up the listener itself.
  */
 export function useKeyboardInput(handlers: KeyboardHandlers): void {
-  const { dispatch, save, resume, newRun, onToggleTargetMode } = handlers;
+  const { dispatch, save, resume, newRun, onToggleTargetMode, interceptCommand } =
+    handlers;
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -67,6 +81,9 @@ export function useKeyboardInput(handlers: KeyboardHandlers): void {
       if (command !== undefined) {
         // Stop the browser from scrolling on arrow keys / submitting on Enter.
         event.preventDefault();
+        // A travel-cancelling press during auto-travel is swallowed: the
+        // interceptor cancels travel and we dispatch nothing (task 5.1).
+        if (interceptCommand?.(command) === true) return;
         dispatch(command);
         return;
       }
@@ -80,5 +97,5 @@ export function useKeyboardInput(handlers: KeyboardHandlers): void {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [dispatch, save, resume, newRun, onToggleTargetMode]);
+  }, [dispatch, save, resume, newRun, onToggleTargetMode, interceptCommand]);
 }

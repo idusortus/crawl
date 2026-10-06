@@ -12,6 +12,68 @@
 
 ---
 
+## 2026-10-06 — Ephemeral client modes are mutually exclusive; a review-requested safety check must amend the spec delta it narrows
+
+**Context:** Re-review of the `travel-and-repeat-move` fix round. Two convention gaps surfaced. (1) `GameScreen.toggleTargetMode` clears `travelMode` but does **not** stop an in-progress auto-travel, so ranged target mode and a running travel scheduler can be live at once — contradicting design D7/`decisions.md`'s "the two ephemeral map-tap modes are mutually exclusive". (2) The review-requested `travelStartBlocked` (refuse to start travel while a monster is already visible/adjacent) narrows the ADDED requirement "a tap on an explored, passable, unoccupied tile SHALL ... begin auto-travel" without any spec-delta caveat or scenario; `openspec validate --strict` is structural and does not catch it.
+
+**Choice:**
+- **Every mode entry that owns a map-tap branch must cancel the other mode's in-flight scheduler, not just its flag.** Entering ranged target mode must call the same `stopTravel()` that entering travel mode already calls; a mode flag and its scheduler are one unit.
+- **When a fix changes observable behavior, the same change must update the spec delta that behavior is specified in** — either add a scenario/caveat or reword the requirement. A green `openspec validate --strict` is not evidence of semantic alignment.
+
+**Trade-offs:** Slightly more coupling at the mode-toggle call sites; spec deltas grow a caveat. Cheaper than shipping a SHALL the implementation violates.
+
+**Revisit:** Never — these are invariants for any future ephemeral mode (e.g. a look/aim mode).
+
+---
+
+## 2026-10-06 — `travel-and-repeat-move` review fixes: run-epoch cancellation, map-tap interception, pure repeat predicate, pre-start danger check
+
+**Context:** Post-apply review found eight issues (one blocker) in the client schedulers. Two of the fixes were forced into shapes different from the review's literal wording by the repo's React lint rules (`react-hooks/set-state-in-effect`, `react-hooks/refs`), which the naive `useEffect(() => stopTravel(), [runEpoch, stopTravel])` violates once `stopTravel` also updates a reactive "travel in progress" flag.
+
+**Choice:**
+- **Run cancellation splits the timer clear from the reactive flag.** `GameScreen`'s `stopTravel` (event/interval paths) calls `clearTravelTimer()` (ref-only: clears `travelActiveRef` + the interval) then `setTravelRun(undefined)`; the status/depth/runEpoch/unmount effects call the ref-only `clearTravelTimer`, and the reactive `travelRun` token (the `{ depth, epoch }` travel started under) is reset *during render* via the existing "adjust state when derived props change" pattern. `useGame` exposes `runEpoch` (initial `0`, bumped in `resume`/`newRun`) and passes it to `Dpad`, whose effect clears any hold-repeat on change. Reading the token as a ref during render is forbidden by `react-hooks/refs`, hence state.
+- **The hold-repeat stop predicate moves to `src/ui/logic/repeat.ts`** (`stepStopsRepeat`), because `Dpad.tsx` imports react-native and cannot be node-tested; `Dpad` imports it. A swallowed direction press now starts the interval *without* an immediate dispatch (design D5 assumption b), so a continued hold repeats from the next tick.
+- **`nextStepPosition(from, direction)` in `input.ts`** extracts the scheduler's `nextStep` derivation; **`travelStartBlocked(state)` in `travel.ts`** refuses to begin travel while a living monster is visible or adjacent; **`MapView` consults `interceptCommand`** before its normal-mode move; **`ActionBar` gains `travelInProgress`** (highlight while auto-walking). Design D3 assumption (d) is corrected: `planTravel` does route through the stairs tile; the scheduler stops before stepping onto it.
+
+**Trade-offs:** The render-time flag reset is a small deviation from the review's literal effect shape, required by the lint rules; the effect still clears the interval and the flag resets in the same render, so "a replaced run has no travel in progress" holds. The epoch must be bumped at every run-replacement site or the invariant silently regresses.
+
+**Revisit:** If the travel/repeat schedulers move into a hook/store, carry the run token with them. Otherwise never.
+
+---
+
+## 2026-10-06 — Client schedulers (travel, hold-repeat) MUST be cancelled by run replacement, not just by depth/status changes
+
+**Context:** Post-apply review of `travel-and-repeat-move`. `GameScreen` stops auto-travel only on `status !== 'playing'` and on `state.level.depth` change. `useGame.resume` and `useGame.newRun` replace the run (newRun draws a fresh seed) but usually keep `depth === 1`, so neither effect fires; the travel interval then keeps dispatching the stale route into the replacement run — a stray logged `move` in a fresh/resumed run, violating the `ui/auto-travel` scenario "A resumed run has no travel in progress".
+
+**Choice:**
+- **Run replacement is a cancellation event for every client scheduler.** A scheduler whose state is derived from one run (travel route, hold-repeat) must stop when the run identity changes, not merely when a depth/status field changes.
+- **The signal is a monotonic run epoch exposed by `useGame`** (`useState(0)` for the initial run, bumped on every run replacement in `resume` and `newRun`), consumed by a `GameScreen` effect that calls `stopTravel()`/clears the Dpad interval. An effect keyed on `state` identity is wrong (it fires every dispatch); `state.rng.seed` is wrong (a same-run resume keeps the seed).
+
+**Trade-offs:** One more value on the `useGame` surface; the epoch must be bumped at *every* run-replacement site or the invariant silently regresses.
+
+**Revisit:** If schedulers are ever hoisted out of `GameScreen`, the epoch (or an equivalent run token) must travel with them. Otherwise never — "a new/replaced run has no client scheduler in flight" is the contract.
+
+---
+
+
+## 2026-10-06 — `travel-and-repeat-move` Phase 2: travel is a client scheduler whose destination predicate lives beside the tap mapper and whose cancel path is a single ref-reading interceptor
+
+**Context:** Applying tasks 4.1–4.4/5.1–5.3 turns the pure `planTravel`/`travelStopReason` into a live feature: a Travel control, an ephemeral travel-target mode, a map-tap destination, a step scheduler, and a swallowed cancelling input. The design pinned the shapes (D2/D4/D5) but left open where the "is this a legal destination?" predicate lives (the task list lets `input.ts` gain a small helper only if needed), whether the first step is immediate or interval-delayed, how the two ephemeral map-tap modes coexist, and how the interceptor is threaded without stale closures.
+
+**Choice:**
+- **The destination predicate `isTravelDestination(grid, explored, entities, playerId, pos)` lives in `src/ui/logic/input.ts`, beside `directionForDelta`** (the other map-tap pure helper). It mirrors `planTravel`'s destination acceptance exactly (in-bounds + explored + passable + unoccupied-except-the-player), so the tap and the planner cannot disagree; reachability stays `planTravel`'s authority. A second small helper, `stepPosition(from, direction)`, gives the scheduler the next step's tile (`travel.ts`'s STEP table is private).
+- **The first step dispatches synchronously in `startTravel`, then `setInterval(TRAVEL_STEP_INTERVAL_MS = 150)` for the rest**, mirroring the Dpad hold-repeat's "the press itself is the first step" and keeping the tap responsive. `runTravelStep` is identity-stable (`[dispatch, stopTravel]`) and reads route/index/before/destination from refs, so the interval closure never sees stale state.
+- **The stop decision reads the `CommandResult` returned by `dispatch`, never post-dispatch React state** (D4); `nextStep` is computed from the *after* player position (`stepPosition(afterPlayer.pos, route[index+1])`).
+- **The two ephemeral map-tap modes are mutually exclusive.** `toggleTravelMode` stops travel then toggles and clears target mode; `toggleTargetMode` clears travel mode. This removes tap-precedence ambiguity and the possibility of two "Cancel" buttons.
+- **`interceptCommand(command)` is one GameScreen `useCallback` returning true only when `travelActiveRef.current && isTravelCancellingCommand(command)`,** calling `stopTravel()`. It is wired to Dpad *after* `clearRepeat()` but *before* `heldRef`/dispatch (so a swallowed press starts no hold-repeat) and to `useKeyboardInput` *after* `preventDefault()` but *before* `dispatch`. The live flag is a ref, so handlers never see a stale value.
+- **Timer-leak safety is centralised in `stopTravel()`**, called from the interval's stop paths, `interceptCommand`, the toggle, `startTravel`'s reset, and three effects (terminal `status`, `state.level.depth` change, unmount).
+
+**Trade-offs:** The destination predicate is in `input.ts` rather than `travel.ts` (already DONE and not owned by this phase); it is tap-mapping-adjacent (like `directionForDelta`) and node-tested, so this is a naming/locality call, not a boundary change. The immediate first step means a tap moves the player one tile before the first interval elapses — consistent with hold-to-repeat and the spec's "begin auto-travel". Mutual exclusivity is an added interaction rule not spelled out in the spec; it is strictly safer than allowing both modes. The swallow is verified by inspection (no React render-test stack in this repo) plus the pure `isTravelCancellingCommand` tests; the key claim is structural — every swallow path returns before the single `dispatch` call, so nothing is appended to the log and the player tile/HP cannot change.
+
+**Revisit:** If travel ever needs to route around known monsters, that is a `planTravel`/stop-predicate change, not this wiring. If a keyboard travel key is wanted, add it to `ACTION_KEYS` and wire `onToggleTravelMode` — no new state. If the destination predicate belongs with pathfinding, move `isTravelDestination` into `travel.ts` when that file is next edited. Otherwise never — "tap validates via a pure predicate, the scheduler reads the dispatch result, one ref-reading interceptor swallows cancels" is the travel contract.
+
+---
+
 ## 2026-10-05 — `mobile-client-playability` Phase 5: fresh seed drawn in a lazy initializer; remembered stairs are a `seen` feature (not a visible-only one) with a pure Chebyshev hint
 
 **Context:** Applying Phase 5 (tasks 7.1, 8.1–8.3, design D4/D5) makes each run start from a client-drawn fresh seed and makes the stairs findable after they leave field of view. D4 pinned "replace `DEFAULT_SEED = 1` with a `freshSeed()` helper used when no explicit `seed` prop is supplied, and derive a fresh seed in `newRun` (not `seedRef.current + 1`)"; D5 pinned "draw `STAIRS_GLYPH` when `onStairs && (visible || explored)`, dimmed when explored-only, while monsters/items render only when visible" and "a pure `stairsHint(from, stairs)` returning an 8-way direction label and Chebyshev distance". Left open: how to distinguish an omitted `seed` from an explicit one without redrawing per render, the exact `freshSeed()` formula, how the HUD handles "on the stairs" / "no stairs", and whether the hint is a display string or structured data.

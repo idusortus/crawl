@@ -2,7 +2,8 @@
  * `MapView` — the fitted glyph grid behind a camera viewport (change
  * `expo-glyph-renderer`, design D2/D5; task 3.4; camera added by
  * `ui-fit-and-persistence` design D1/D5, task 1.2; fit-to-width + tap-to-move
- * added by `mobile-client-playability` design D1/D2/D7, tasks 4.2/4.3/5.3).
+ * added by `mobile-client-playability` design D1/D2/D7, tasks 4.2/4.3/5.3;
+ * zoom-aware tile sizing added by `map-zoom` design D2/D5/D7, tasks 2.1/2.2).
  *
  * Reads `GameState` from the game context and draws the grid of memoized
  * {@link Tile}s inside an outer, clipped viewport `View`. FOV is **derived per
@@ -11,12 +12,14 @@
  * is read directly. Visibility is never stored, matching the engine's model.
  *
  * The tile side length is fitted to the measured viewport width
- * (`floor(viewportWidth / grid.width)`, at least 1) so the full level width is
- * visible (design D1). Before the first `onLayout` the width is 0, so the fixed
- * `TILE_SIZE` is used for a safe first render. Each axis is centred when the
- * fitted map fits the measured viewport on that axis, and pinned to `flex-start`
- * with the clamped camera translation when it overflows (the vertical axis on a
- * phone).
+ * (`floor(viewportWidth / grid.width)`, at least 1) and then multiplied by the
+ * ephemeral `zoom` factor (`max(1, round(base * zoom))`, design D2) so the
+ * default 1× keeps the full level width visible while a higher zoom draws
+ * fewer, larger tiles. Before the first `onLayout` the width is 0, so the fixed
+ * `TILE_SIZE` is used as the base (and zoomed) for a safe first render. Each
+ * axis is centred when the fitted map fits the measured viewport on that axis,
+ * and pinned to `flex-start` with the clamped camera translation when it
+ * overflows (the vertical axis on a phone, and either axis when zoomed in).
  *
  * A single `Pressable` wrapper handles taps: the touch location plus the applied
  * per-axis offset is converted to a tile. In normal play a cardinal-adjacent tap
@@ -27,10 +30,12 @@
  * living monster** (not the player) dispatches a `ranged-attack` at that tile and
  * exits target mode; any other tap exits target mode without dispatching (task
  * 6.3; design D7). In travel-target mode a tap on an explored, passable,
- * unoccupied tile starts auto-travel to it and any other tap ends travel mode
- * without dispatching (change `travel-and-repeat-move`, task 4.3). The target
- * tests are the pure `rangedTargetAt`/`isTravelDestination` helpers so they are
- * unit-tested without a renderer.
+ * unoccupied tile starts auto-travel to it; any other tap raises the optional
+ * `onTravelRefused` callback (so the caller can surface a brief refusal notice)
+ * and ends travel mode without dispatching (change `travel-and-repeat-move`,
+ * task 4.3; refusal feedback by `auto-travel-reliability`, design D3; task 4.1).
+ * The target tests are the pure `rangedTargetAt`/`isTravelDestination` helpers
+ * so they are unit-tested without a renderer.
  *
  * Tile resolution is delegated to the pure `tileRender` helper, so this
  * component only maps state → per-tile primitives (glyph/color/background),
@@ -50,7 +55,7 @@ import {
 import type { Command, Position } from '@engine';
 
 import { useGameContext } from '../providers/GameProvider';
-import { appliedAxisOffset, axisOffset } from '../logic/camera';
+import { appliedAxisOffset, axisOffset, tileAt } from '../logic/camera';
 import { tileRender } from '../logic/glyphs';
 import { directionForDelta, isTravelDestination } from '../logic/input';
 import { rangedTargetAt } from '../logic/ranged';
@@ -84,6 +89,13 @@ export interface MapViewProps {
   travelMode?: boolean;
   /** Starts auto-travel to a tapped destination and exits travel-target mode. */
   onStartTravel?: (destination: Position) => void;
+  /**
+   * Invoked when a travel-mode tap lands on a tile that is not a legal
+   * destination, so the caller can surface a refusal notice (change
+   * `auto-travel-reliability`, design D3; task 4.1). Called before
+   * `onExitTravelMode`.
+   */
+  onTravelRefused?: () => void;
   /** Ends travel-target mode without dispatching (an invalid destination tap). */
   onExitTravelMode?: () => void;
   /**
@@ -94,6 +106,13 @@ export interface MapViewProps {
    * and desync the scheduler.
    */
   interceptCommand?: (command: Command) => boolean;
+  /**
+   * The presentation-only zoom factor applied to the fit-to-width base tile size
+   * (change `map-zoom`, design D2; task 2.1). `1` is the fit-to-width base;
+   * `GameScreen` passes `zoomFactor(level)` from the pure `logic/zoom` helper.
+   * Defaults to `1` so a caller that omits it renders the original fit.
+   */
+  zoom?: number;
 }
 
 export function MapView({
@@ -101,8 +120,10 @@ export function MapView({
   onExitTargetMode,
   travelMode = false,
   onStartTravel,
+  onTravelRefused,
   onExitTravelMode,
   interceptCommand,
+  zoom = 1,
 }: MapViewProps) {
   const { state, pack, dispatch } = useGameContext();
 
@@ -152,20 +173,28 @@ export function MapView({
 
   const { width, height } = state.grid;
 
-  // Fit tiles to the measured viewport width (design D1). Before measurement the
-  // width is 0, so fall back to the fixed `TILE_SIZE`.
+  // Fit tiles to the measured viewport width (design D1), then apply the
+  // ephemeral zoom factor (change `map-zoom`, design D2/D5; task 2.1). This is
+  // the ONE tile-size source: the fitted map size, the centring flags, the
+  // camera offsets, the tap conversion, and every `Tile`'s `size` derive from
+  // `tileSize`, so camera and hit-testing follow the zoom automatically. Before
+  // measurement the fixed `TILE_SIZE` is the base and is zoomed too, so a
+  // pre-layout render honours the current zoom. `max(1, round(...))` keeps the
+  // tile a positive integer (no sub-pixel seams; design D5).
   const measured = viewport.width > 0;
-  const tileSize = measured
+  const baseTileSize = measured
     ? Math.max(1, Math.floor(viewport.width / width))
     : TILE_SIZE;
+  const tileSize = Math.max(1, Math.round(baseTileSize * zoom));
 
   const fittedWidth = width * tileSize;
   const fittedHeight = height * tileSize;
 
-  // A fitted width never exceeds the viewport (floor division), so the
-  // horizontal axis is always centred; the vertical axis is centred only when
-  // the fitted height fits, otherwise it is pinned to `flex-start` and the
-  // clamped camera translates it.
+  // An axis is centred when the fitted map fits the measured viewport; at 1×
+  // the floor division guarantees the horizontal axis always fits, while a
+  // zoomed-in map overflows one or both axes, which then switch to `flex-start`
+  // so the clamped camera translation positions them. A zoomed-out map fits both
+  // axes and centres (change `map-zoom`, task 2.2).
   const centerX = measured && fittedWidth <= viewport.width;
   const centerY = viewport.height > 0 && fittedHeight <= viewport.height;
 
@@ -188,9 +217,12 @@ export function MapView({
 
   const handlePress = (locationX: number, locationY: number) => {
     if (player === undefined) return;
+    // The touch→tile conversion is the pure `tileAt` helper (change `map-zoom`,
+    // design D7; task 1.3), so it is unit-tested against the renderer's exact
+    // applied offset at every zoom (the `tileSize` above is already zoomed).
     const tile = {
-      x: Math.floor((locationX - appliedX) / tileSize),
-      y: Math.floor((locationY - appliedY) / tileSize),
+      x: tileAt(locationX, appliedX, tileSize),
+      y: tileAt(locationY, appliedY, tileSize),
     };
 
     if (travelMode) {
@@ -211,6 +243,9 @@ export function MapView({
       ) {
         onStartTravel?.(tile);
       } else {
+        // Surface the refusal before ending travel-target mode (change
+        // `auto-travel-reliability`, design D3; task 4.1).
+        onTravelRefused?.();
         onExitTravelMode?.();
       }
       return;

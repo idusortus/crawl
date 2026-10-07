@@ -2,14 +2,15 @@
  * `useKeyboardInput` — web-only keyboard controls (change `expo-glyph-renderer`,
  * design D3; task 4.2; extended by `core-gameplay-loop` task 9.2 / design D10;
  * directional attack removed and a target-mode key added by
- * `mobile-client-playability` design D2/D7, task 5.4).
+ * `mobile-client-playability` design D2/D7, task 5.4; zoom keys added by
+ * `map-zoom` design D6, task 3.3).
  *
  * A development convenience for the web target: arrow keys map to the four move
  * commands, `p`/`g` to pickup, Enter (or `>`, the roguelike descend key) to
- * descend, `.` to wait a turn, `f` to toggle ranged target mode, and `s`/`r`/`n`
- * to the save / resume / new-run client actions. Command keys resolve through
- * `dispatch`; action keys invoke the matching callback. The hook never touches
- * state.
+ * descend, `.` to wait a turn, `f` to toggle ranged target mode, `+`/`=` and `-`
+ * to zoom the map in/out, and `s`/`r`/`n` to the save / resume / new-run client
+ * actions. Command keys resolve through `dispatch`; action keys invoke the
+ * matching callback. The hook never touches state.
  *
  * There is no keyboard attack: directional melee was removed along with the
  * on-screen attack row (melee is bump-to-attack). The target-mode callback is
@@ -51,6 +52,13 @@ export interface KeyboardHandlers {
    */
   onToggleTargetMode?: () => void;
   /**
+   * Steps the map zoom up one level (change `map-zoom`, design D6; task 3.3).
+   * Optional; a press with no handler wired is a no-op.
+   */
+  onZoomIn?: () => void;
+  /** Steps the map zoom down one level; optional, like {@link onZoomIn}. */
+  onZoomOut?: () => void;
+  /**
    * Consulted before dispatching a resolved command; returns `true` when the
    * input was swallowed (auto-travel cancelled it), so no command is dispatched
    * (change `travel-and-repeat-move`, design D5; task 5.1). Optional so a call
@@ -67,7 +75,7 @@ export interface KeyboardHandlers {
  * @returns Nothing; the effect attaches and cleans up the listener itself.
  */
 export function useKeyboardInput(handlers: KeyboardHandlers): void {
-  const { dispatch, save, resume, newRun, onToggleTargetMode, interceptCommand } =
+  const { dispatch, save, resume, newRun, onToggleTargetMode, onZoomIn, onZoomOut, interceptCommand } =
     handlers;
 
   useEffect(() => {
@@ -93,9 +101,11 @@ export function useKeyboardInput(handlers: KeyboardHandlers): void {
       else if (action === 'resume') resume();
       else if (action === 'new-run') newRun();
       else if (action === 'toggle-target-mode') onToggleTargetMode?.();
+      else if (action === 'zoom-in') onZoomIn?.();
+      else if (action === 'zoom-out') onZoomOut?.();
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [dispatch, save, resume, newRun, onToggleTargetMode, interceptCommand]);
+  }, [dispatch, save, resume, newRun, onToggleTargetMode, onZoomIn, onZoomOut, interceptCommand]);
 }

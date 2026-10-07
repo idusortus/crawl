@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { appliedAxisOffset, axisOffset } from './camera';
+import { appliedAxisOffset, axisOffset, tileAt } from './camera';
 
 // A 40x30 map at the shipped `TILE_SIZE = 14` (design D1): 560x420 dp.
 const TILE_SIZE = 14;
@@ -109,5 +109,92 @@ describe('appliedAxisOffset', () => {
     const cameraOffset = axisOffset(MAP_Y, 200, 20, TILE_SIZE);
     expect(cameraOffset).toBeLessThan(0);
     expect(appliedAxisOffset(MAP_Y, 200, cameraOffset)).toBe(cameraOffset);
+  });
+});
+
+// Zoomed tile sizes (change `map-zoom`, design D2/D5; task 1.3). The base tile
+// size is the fit-to-width `floor(360 / 40) = 9`; `MapView` then rounds
+// `base * factor` (D5). `Math.round(9 * 1.5) = 14`, `Math.round(9 * 0.5) = 5`.
+describe('axisOffset / appliedAxisOffset at zoomed tile sizes', () => {
+  const GRID_WIDTH = 40;
+  const GRID_HEIGHT = 30;
+  const BASE = Math.max(1, Math.floor(VIEWPORT_X / GRID_WIDTH)); // 9
+
+  it('overflows horizontally when zoomed in, so the camera translates', () => {
+    const tileSize = Math.max(1, Math.round(BASE * 1.5)); // 14
+    const fittedWidth = GRID_WIDTH * tileSize; // 560
+    expect(fittedWidth).toBeGreaterThan(VIEWPORT_X);
+    const offset = axisOffset(fittedWidth, VIEWPORT_X, 20, tileSize);
+    expect(offset).toBe(-100);
+    // Overflow: the applied offset is the camera translation, not a margin.
+    expect(appliedAxisOffset(fittedWidth, VIEWPORT_X, offset)).toBe(-100);
+  });
+
+  it('still centres a zoomed-out map that fits the viewport', () => {
+    const tileSize = Math.max(1, Math.round(BASE * 0.5)); // 5
+    const fittedWidth = GRID_WIDTH * tileSize; // 200
+    expect(fittedWidth).toBeLessThan(VIEWPORT_X);
+    const offset = axisOffset(fittedWidth, VIEWPORT_X, 20, tileSize);
+    expect(offset).toBe(0);
+    // Fit: the applied offset is the centring margin (360 - 200) / 2 = 80.
+    expect(appliedAxisOffset(fittedWidth, VIEWPORT_X, offset)).toBe(80);
+  });
+
+  it('centres the zoomed-in vertical axis because it still fits', () => {
+    const tileSize = Math.max(1, Math.round(BASE * 1.5)); // 14
+    const fittedHeight = GRID_HEIGHT * tileSize; // 420
+    expect(fittedHeight).toBeLessThan(VIEWPORT_Y);
+    expect(axisOffset(fittedHeight, VIEWPORT_Y, 20, tileSize)).toBe(0);
+    // (640 - 420) / 2 = 110.
+    expect(appliedAxisOffset(fittedHeight, VIEWPORT_Y, 0)).toBe(110);
+  });
+});
+
+// The tap→tile round-trip at zoomed sizes (change `map-zoom`, design D7; task
+// 1.3). A touch at the centre of a drawn tile must resolve back to that tile,
+// using exactly the applied offset the renderer positioned the map with.
+describe('tileAt', () => {
+  const GRID_WIDTH = 40;
+  const BASE = Math.max(1, Math.floor(VIEWPORT_X / GRID_WIDTH)); // 9
+
+  it('round-trips a touch centre to its tile when zoomed in', () => {
+    const tileSize = Math.max(1, Math.round(BASE * 1.5)); // 14
+    const fittedWidth = GRID_WIDTH * tileSize; // 560 (overflows)
+    const appliedX = appliedAxisOffset(
+      fittedWidth,
+      VIEWPORT_X,
+      axisOffset(fittedWidth, VIEWPORT_X, 20, tileSize),
+    ); // -100
+    expect(appliedX).toBe(-100);
+    // Tile 10 spans [appliedX + 140, appliedX + 154) = [40, 54); its centre 47.
+    const locationX = appliedX + 10 * tileSize + Math.floor(tileSize / 2); // 47
+    expect(tileAt(locationX, appliedX, tileSize)).toBe(10);
+    // The tile's left edge and last pixel both stay on tile 10.
+    expect(tileAt(appliedX + 10 * tileSize, appliedX, tileSize)).toBe(10);
+    expect(tileAt(appliedX + 11 * tileSize - 1, appliedX, tileSize)).toBe(10);
+  });
+
+  it('round-trips a touch centre to its tile when zoomed out', () => {
+    const tileSize = Math.max(1, Math.round(BASE * 0.5)); // 5
+    const fittedWidth = GRID_WIDTH * tileSize; // 200 (fits, centred)
+    const appliedX = appliedAxisOffset(
+      fittedWidth,
+      VIEWPORT_X,
+      axisOffset(fittedWidth, VIEWPORT_X, 20, tileSize),
+    ); // 80
+    expect(appliedX).toBe(80);
+    // Tile 10 spans [80 + 50, 80 + 55) = [130, 135); its centre 132.
+    const locationX = appliedX + 10 * tileSize + Math.floor(tileSize / 2); // 132
+    expect(tileAt(locationX, appliedX, tileSize)).toBe(10);
+  });
+
+  it('matches the inline floor conversion it replaces', () => {
+    const tileSize = 14;
+    const appliedOffset = -100;
+    for (const location of [-100, -87, 0, 47, 200, 359]) {
+      expect(tileAt(location, appliedOffset, tileSize)).toBe(
+        Math.floor((location - appliedOffset) / tileSize),
+      );
+    }
   });
 });

@@ -2,7 +2,9 @@
  * `GameScreen` — the playable screen (change `expo-glyph-renderer`, task 3.5;
  * extended by `core-gameplay-loop` task 9.1/9.3 / design D10; target mode by
  * `mobile-client-playability` tasks 6.2/9.1 / design D7/D6; auto-travel by
- * `travel-and-repeat-move` tasks 4.2/4.4/5.1/5.2 / design D2/D4/D5).
+ * `travel-and-repeat-move` tasks 4.2/4.4/5.1/5.2 / design D2/D4/D5; best-effort
+ * goal + refusal feedback by `auto-travel-reliability` tasks 2.2/3.1/3.2/4.1 /
+ * design D1/D2/D3; ephemeral map zoom by `map-zoom` tasks 3.1/3.3 / design D1).
  *
  * Composes the HUD and the glyph map, and renders the recoverable pack-load
  * error surface when the provider captured one (design D7): a bad pack shows the
@@ -31,9 +33,19 @@
  * command log, or the save. `interceptCommand` cancels travel and swallows a
  * direction/wait press while travel is active (design D5), and the timer is
  * cleared on stop, level change, terminal status, run replacement (`runEpoch`),
- * mode exit, and unmount. Travel also refuses to start when a living monster is
- * already visible or adjacent, so it cannot take a step before the stop
- * predicate can fire (post-apply review Fixes 1/6).
+ * mode exit, and unmount. Travel refuses to start when a living monster is
+ * **orthogonally adjacent** (change `auto-travel-reliability`, design D2); a
+ * merely visible monster is handled by the post-step `monster-visible` stop.
+ * A tap that cannot begin travel — no reachable goal, an adjacent monster, or an
+ * illegal destination tile rejected in `MapView` — raises the presentation-only
+ * `travelNotice`, shown as an inline note by `ActionBar` and cleared when travel
+ * begins or the run is replaced (design D3; tasks 3.1/3.2/4.1).
+ *
+ * **Map zoom** is a third ephemeral `useState` (`zoomLevel`, an index into the
+ * pure `logic/zoom` ladder; change `map-zoom`, design D1/D4; task 3.1). The
+ * derived factor goes to `MapView` and the level plus step callbacks to
+ * `ActionBar`; the web-only keyboard also maps `+`/`-` (task 3.3). Like the
+ * other modes it never enters `GameState`, the command log, or a save.
  *
  * Safe-area insets (design D6) pad the container top/bottom so the HUD clears the
  * status bar and the controls clear the navigation bar; the `mapArea: flex: 1`
@@ -58,6 +70,12 @@ import { isTerminal } from '../logic/glyphs';
 import { hasRangedWeapon } from '../logic/ranged';
 import { isTravelCancellingCommand, nextStepPosition } from '../logic/input';
 import { planTravel, travelStartBlocked, travelStopReason } from '../logic/travel';
+import {
+  DEFAULT_ZOOM_LEVEL,
+  zoomFactor,
+  zoomIn as zoomInLevel,
+  zoomOut as zoomOutLevel,
+} from '../logic/zoom';
 import { useKeyboardInput } from '../hooks/useKeyboardInput';
 import { colors } from '../theme/colors';
 
@@ -79,6 +97,12 @@ export function GameScreen() {
   const [targetMode, setTargetMode] = useState(false);
   const [travelMode, setTravelMode] = useState(false);
 
+  // Ephemeral, presentation-only map zoom (change `map-zoom`, design D1; task
+  // 3.1): an index into the pure `logic/zoom` ladder. The derived factor goes to
+  // `MapView` and the level to the zoom controls. It never enters `GameState`,
+  // the command log, or a save, and changing it dispatches no command.
+  const [zoomLevel, setZoomLevel] = useState(DEFAULT_ZOOM_LEVEL);
+
   // Whether auto-travel is currently running, as the run token (depth + epoch)
   // it belongs to. `travelMode` is not enough: `startTravel` exits travel-target
   // mode as soon as a destination is chosen, so this reactive token is what lets
@@ -90,6 +114,15 @@ export function GameScreen() {
     { depth: number; epoch: number } | undefined
   >(undefined);
   const travelInProgress = travelRun !== undefined;
+
+  // Presentation-only refusal notice (change `auto-travel-reliability`, design
+  // D3): a brief inline string set when a travel-mode tap cannot begin travel,
+  // and never part of `GameState`, the command log, or a save. It carries the
+  // run epoch it was raised in so a replaced run clears it — the same token
+  // pattern as `travelRun`. No clock, no randomness.
+  const [travelNotice, setTravelNotice] = useState<
+    { text: string; epoch: number } | undefined
+  >(undefined);
 
   // Whether the player can currently enter target mode (carries a ranged
   // weapon). Held in a ref so the toggle callback stays identity-stable across
@@ -131,6 +164,22 @@ export function GameScreen() {
     clearTravelTimer();
     setTravelRun(undefined);
   }, [clearTravelTimer]);
+
+  /**
+   * Raises the presentation-only refusal notice, tagged with the current run
+   * epoch so a replaced run can clear it in render (design D3). An event-handler
+   * setter — never called during render.
+   */
+  const raiseTravelNotice = useCallback(
+    (text: string) => setTravelNotice({ text, epoch: runEpoch }),
+    [runEpoch],
+  );
+
+  /** The invalid-destination tap path (raised from `MapView`'s travel branch). */
+  const refuseInvalidDestination = useCallback(
+    () => raiseTravelNotice('That tile cannot be a travel destination'),
+    [raiseTravelNotice],
+  );
 
   /**
    * Dispatches one travel step and decides whether to continue. Reads the
@@ -190,7 +239,7 @@ export function GameScreen() {
       if (state === undefined) return;
       const player = entityById(state.entities, state.playerId);
       if (player === undefined) return;
-      const route = planTravel(
+      const plan = planTravel(
         state.grid,
         state.explored,
         state.entities,
@@ -198,25 +247,40 @@ export function GameScreen() {
         destination,
         state.playerId,
       );
-      // No route, or already at the destination: travel does not begin.
-      if (route === undefined || route.length === 0) return;
-      // Danger already present (a living monster visible or adjacent): do not
-      // start, so travel cannot take a step before the stop predicate can fire
-      // (change `travel-and-repeat-move`, post-apply review Fix 6).
-      if (travelStartBlocked(state)) return;
+      // No reachable goal at all: travel cannot begin; surface the refusal
+      // (change `auto-travel-reliability`, design D3).
+      if (plan === undefined) {
+        raiseTravelNotice('No route to that spot');
+        return;
+      }
+      // Already at the destination: a valid but empty plan; nothing to walk.
+      if (plan.route.length === 0) return;
+      // A living monster is already orthogonally adjacent: do not start, so
+      // travel cannot walk into immediate danger on its first step (design D2).
+      // A merely visible monster no longer blocks the start.
+      if (travelStartBlocked(state)) {
+        raiseTravelNotice('A monster is too close to travel');
+        return;
+      }
+      // Travel actually begins: clear any earlier refusal notice.
+      setTravelNotice(undefined);
       travelActiveRef.current = true;
       setTravelRun({ depth: state.level.depth, epoch: runEpoch });
-      travelRouteRef.current = route;
+      travelRouteRef.current = plan.route;
       travelIndexRef.current = 0;
       travelBeforeRef.current = state;
-      travelDestinationRef.current = destination;
+      // Thread the planner's goal — the destination, or the best-approach tile
+      // when it was unreachable — so reaching it reports `destination-reached`
+      // through `travelStopReason` rather than falling through to `path-blocked`
+      // when the route is exhausted (design D1).
+      travelDestinationRef.current = plan.goal;
       if (runTravelStep()) {
         travelTimerRef.current = setInterval(() => {
           runTravelStep();
         }, TRAVEL_STEP_INTERVAL_MS);
       }
     },
-    [state, runTravelStep, stopTravel, runEpoch],
+    [state, runTravelStep, stopTravel, runEpoch, raiseTravelNotice],
   );
 
   /**
@@ -258,6 +322,18 @@ export function GameScreen() {
   }, [stopTravel]);
   const exitTravelMode = useCallback(() => setTravelMode(false), []);
 
+  // Zoom steps are pure ladder operations (change `map-zoom`, design D4; task
+  // 3.1); the clamped steppers make a press at either bound a no-op. Identity
+  // stable, so the keyboard effect does not re-register per turn.
+  const handleZoomIn = useCallback(
+    () => setZoomLevel((level) => zoomInLevel(level)),
+    [],
+  );
+  const handleZoomOut = useCallback(
+    () => setZoomLevel((level) => zoomOutLevel(level)),
+    [],
+  );
+
   // A run that has ended must not linger in either mode. Adjusted during render
   // (React's documented "reset state when derived props change" pattern) rather
   // than in an effect, so it lands in the same render without a cascading commit.
@@ -281,6 +357,20 @@ export function GameScreen() {
   ) {
     setTravelRun(undefined);
   }
+  // A refusal notice belongs to the run it was raised in; a replaced run clears
+  // it in the same render, mirroring the `travelRun` token above. The displayed
+  // text is derived, so a stale notice never flashes after the reset.
+  if (travelNotice !== undefined && travelNotice.epoch !== runEpoch) {
+    setTravelNotice(undefined);
+  }
+  const travelNoticeText =
+    travelNotice !== undefined && travelNotice.epoch === runEpoch
+      ? travelNotice.text
+      : undefined;
+
+  // The zoom factor actually handed to the renderer; derived, never stored
+  // (change `map-zoom`, task 3.1).
+  const zoom = zoomFactor(zoomLevel);
 
   // Stop the scheduler on terminal status, a level change, a run replacement,
   // and unmount so no interval can leak (design D4 risk; post-apply review
@@ -303,8 +393,9 @@ export function GameScreen() {
   useEffect(() => clearTravelTimer, [clearTravelTimer]);
 
   // Web-only: arrows move, activation keys dispatch gameplay commands, S/R/N
-  // invoke save/resume/new-run, and `f` toggles ranged target mode. On native
-  // this registers no listener (design D3/D10/D7). `interceptCommand` swallows a
+  // invoke save/resume/new-run, `f` toggles ranged target mode, and `+`/`-`
+  // step the map zoom. On native this registers no listener (design
+  // D3/D10/D7; zoom keys by `map-zoom` task 3.3). `interceptCommand` swallows a
   // travel-cancelling press while auto-travel is active.
   useKeyboardInput({
     dispatch,
@@ -312,6 +403,8 @@ export function GameScreen() {
     resume,
     newRun,
     onToggleTargetMode: toggleTargetMode,
+    onZoomIn: handleZoomIn,
+    onZoomOut: handleZoomOut,
     interceptCommand,
   });
 
@@ -350,7 +443,9 @@ export function GameScreen() {
           travelMode={travelMode}
           onStartTravel={startTravel}
           onExitTravelMode={exitTravelMode}
+          onTravelRefused={refuseInvalidDestination}
           interceptCommand={interceptCommand}
+          zoom={zoom}
         />
       </View>
       <View style={styles.inputSlot}>
@@ -361,6 +456,10 @@ export function GameScreen() {
           travelMode={travelMode}
           onToggleTravelMode={toggleTravelMode}
           travelInProgress={travelInProgress}
+          travelNotice={travelNoticeText}
+          zoomLevel={zoomLevel}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
         />
       </View>
     </View>

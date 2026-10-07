@@ -12,6 +12,69 @@
 
 ---
 
+## 2026-10-06 — This round's apply: three changes sequentially; the FOV corner-pass design was corrected before coding
+
+**Context:** Applying the three approved proposals (`fix-fov-and-remembered-items` → `auto-travel-reliability` → `map-zoom`) in one working tree. `auto-travel-reliability` and `map-zoom` both edit `GameScreen.tsx`/`MapView.tsx`/`ActionBar.tsx`, so they cannot run in parallel. Separately, while preparing `fix-fov-and-remembered-items` for implementation, the reviewed design D1 was found to be literally wrong.
+
+**Choice:**
+- **Apply each change through its own apply workflow, sequentially.** One shared working tree; overlapping UI files mean change 3 builds on change 2's edits.
+- **Corrected `fix-fov-and-remembered-items` design D1 before delegating.** The approved wording ("flood ... 4-neighbour steps always allowed to visible tiles") would re-admit the very two-wall corner it targets, because a wall tile is shadowcast-visible and its orthogonal neighbour is the leaked corner. The corrected pass floods through **passable, already-visible** tiles only (4-neighbour always; diagonal only if one shared orthogonal is passable) and keeps a non-passable tile only when it is 4-adjacent to a flooded tile. This was folded into `design.md` D1 and task 1.1; `openspec validate --strict` stayed green.
+- **Tie-coupled UI changes used ONE coder per change** (all of `auto-travel-reliability` in one coder; all of `map-zoom` in one coder) rather than file-split parallel agents, because changing `planTravel`'s return shape (and the `MapView`/`ActionBar` prop surfaces) would otherwise desync across phases and fail `tsc` mid-apply.
+
+**Trade-offs:** Sequential application is slower than parallel and leaves three changes uncommitted at once, but it avoids same-file conflicts and cross-phase type breaks. Correcting a reviewed design before coding is a deviation from "the design is locked", justified because the literal algorithm contradicted its own required scenarios.
+
+**Revisit:** Never for the passable-only flood rule. If the FOV algorithm is ever replaced wholesale (e.g. a restrictive shadowcaster), revisit the corrective pass. If a future change must touch `GameScreen`/`MapView`/`ActionBar` concurrently, serialize rather than parallelize.
+
+---
+
+## 2026-10-06 — `map-zoom` implementation: discrete ladder in a pure helper, one zoomed tile-size source, `tileAt` extracted, web-only key zoom (no wheel)
+
+**Context:** Applying tasks 1.1–3.3 turns the `map-zoom` design (D1–D7) into code: a pure zoom ladder, a zoomed `MapView`, ephemeral `GameScreen` state, action-bar controls, and an optional web keyboard mapping. The design pinned the shapes (D2 single `tileSize` source; D3 no `transform: scale`; D4 discrete bounded ladder `[0.5, 0.75, 1, 1.25, 1.5, 2, 3]`; D6 controls in the action bar; D7 extract `tileAt`) but left open the exact helper surface, the `clampZoom` edge arithmetic, where the level display renders, and which keys (and whether wheel) the web mapping uses.
+
+**Choice:**
+- **`src/ui/logic/zoom.ts` is framework-free and total.** `ZOOM_FACTORS` is the ordered ladder; `DEFAULT_ZOOM_LEVEL = ZOOM_FACTORS.indexOf(1)` (derived, so it cannot drift); `clampZoom(level)` returns `DEFAULT_ZOOM_LEVEL` for a non-finite input, otherwise `Math.trunc` clamped to `[MIN,MAX]`; `zoomFactor(level)` is `ZOOM_FACTORS[clampZoom(level)]`; `zoomIn`/`zoomOut` are `clampZoom(clampZoom(level) ± 1)`, so a press at a bound is a no-op. A level is an integer ladder index; a factor is the multiplier.
+- **`-0` is normalized.** `Math.trunc(-0.5)` yields `-0`, which `Object.is` treats as distinct from `0`; the lower clamp uses `index <= MIN_ZOOM_LEVEL` so the result is always exactly `0` at the bound (a test pins this).
+- **Stop logic stays out of the ladder.** Bounds are a no-op via the steppers; `MapView` needs no max check, and `ActionBar` renders the buttons unconditionally (a press at a bound simply does nothing).
+- **One zoomed tile size (D2).** `baseTileSize = measured ? max(1, floor(viewport.width / width)) : TILE_SIZE`, then `tileSize = max(1, round(baseTileSize * zoom))`. `fitted*`, `centerX/centerY`, `axisOffset`, `appliedAxisOffset`, the tap conversion, the inner `View` size, and every `Tile.size` all read `tileSize`. The pre-layout `TILE_SIZE` fallback is zoomed too. At 1× the horizontal axis still always fits and centres; above 1× either axis may overflow and switch to `flex-start` + clamped camera.
+- **`tileAt(locationAxis, appliedOffset, tileSize)` in `camera.ts`** is the extracted inline conversion; `MapView` calls it on both axes with the already-zoomed `tileSize`. Camera tests round-trip a touch centre at a zoomed-in (`round(9×1.5)=14`) and zoomed-out (`round(9×0.5)=5`) size.
+- **Controls render inline in `ActionBar`'s existing first row** (`−` / `Zoom {factor}×` / `+`) reusing `styles.button`, with `accessibilityLabel`s "Zoom out"/"Zoom in". The level display reuses `zoomFactor` from the pure helper rather than formatting a number in `GameScreen`.
+- **Web keyboard maps `+`, `=`, and `-`** through the existing `ACTION_KEYS`/`actionForKey` → `KeyboardHandlers.onZoomIn`/`onZoomOut` path; native registers no listener (the existing `Platform.OS !== 'web'` guard). **Wheel zoom was deliberately skipped** as the low-risk half of "`+`/`-` and/or wheel": a `wheel` listener would need `preventDefault` and would intercept page scrolling, for a convenience already covered by the keys.
+
+**Trade-offs:** The ladder is indexed rather than stored as a factor in `GameScreen`, so a future ladder reorder changes existing levels' meaning (acceptable — zoom is ephemeral and never persisted). Rendering the controls in the first action row keeps the pad footprint unchanged but groups zoom with Save/Resume; a dedicated component was allowed but unnecessary. Skipping wheel leaves one optional task item unimplemented, recorded here so it is a choice, not an oversight.
+
+**Revisit:** If continuous pinch-zoom is ever wanted, it is a new interaction (a gesture handler feeding a fractional level), not a change to this ladder. If the zoom controls should be visually separated from the action buttons, extract a small `ZoomControls` component and keep this helper unchanged. If wheel zoom is wanted, add a `wheel` listener in `useKeyboardInput`'s web branch with an explicit `passive: false`/`preventDefault` policy — a deliberate scroll-interception decision, not a drop-in.
+
+---
+
+**Context:** Applying tasks 1.1–4.1 makes a travel tap reliably start movement. Design D1–D4 pinned the shapes (`planTravel` returns `{ route, goal }`; adjacency-only pre-start gate; transient `GameScreen` notice; unchanged tap predicate), leaving open how the notice is tagged to a run, where the inline note renders, and whether `planTravel`'s destination-traversability guard survives best-effort.
+
+**Choice:**
+- **`planTravel` keeps its early destination-traversability guard.** The destination must still be explored, passable, and unoccupied or the plan is `undefined`; best-effort applies only once the destination is legal but unreachable. So `undefined` means either an illegal destination or a visited set containing only the player's own tile (no fallback). This preserves every existing rejection test while adding the best-approach path. `bestApproachIndex` iterates ascending row-major and replaces only on a strictly smaller Chebyshev distance, so ties deterministically keep the lowest `y * width + x`.
+- **The refusal notice carries the run epoch.** `GameScreen` stores `travelNotice` as `{ text, epoch }` (mirroring the `travelRun` token) and clears it during render when `runEpoch` changes, because `react-hooks/set-state-in-effect` forbids a setState-in-effect and `react-hooks/refs` forbids reading a ref during render. It is set in event handlers only and cleared when travel actually begins.
+- **The notice renders through `ActionBar`.** A `travelNotice?: string` prop renders in the existing inline-note slot after `saveError` and before `savedIndicator`; `MapView` gains `onTravelRefused?: () => void`, called before `onExitTravelMode` in its travel-mode else-branch.
+
+**Trade-offs:** The epoch token adds a small object to state rather than a bare string, forced by the lint rules; the displayed text is derived so a stale notice never flashes. The traversability guard means a direct `planTravel` call with an illegal destination still returns `undefined` rather than a fallback (the tap predicate already prevents it in production).
+
+**Revisit:** Never for the notice mechanism — epoch-tagged presentation state is the established pattern. If the destination guard is ever deliberately relaxed so an illegal tap still best-approaches, update the `ui/auto-travel` spec scenario and the existing rejection tests together.
+
+---
+
+## 2026-10-06 — Three client-fix proposals (zoom, travel reliability, FOV + remembered items); the travel pre-start gate's home is `ui/input-mapping`
+
+**Context:** Three user-reported client issues were proposed: (1) map zoom in/out, (2) Travel "does nothing" after tapping an explored square, (3) monsters/items seen through walls. Empirical diagnosis (background agent) found: travel's dominant silent no-op is an **unreachable tapped destination** (≈73% of distant remembered taps; the explored mask holds fragments unreachable through explored+passable tiles, amplified by the FOV leak) plus a ~20% silent pre-start refusal; the through-wall effect is **recursive-shadowcasting diagonal-gap visibility** (`#` at (2,1) and (1,2) from (1,1) leaves (2,2) visible), not a rendering bug (`tileRender` only draws occupants under `visible[index]`); and zoom's single integration point is `MapView`'s fit-to-width `tileSize`.
+
+**Choice:**
+- Package as **three separate OpenSpec changes**: `map-zoom` (new `ui/map-zoom` + modified `ui/glyph-renderer`), `auto-travel-reliability` (modified `ui/auto-travel` + `ui/input-mapping`), `fix-fov-and-remembered-items` (modified `engine/field-of-view` + `ui/glyph-renderer`).
+- **Travel fix** = best-effort routing (`planTravel` returns `{ route, goal }`; the goal is threaded into `travelDestinationRef` so a best-approach goal reports `destination-reached`, not `path-blocked`), the pre-start gate narrowed to **adjacency-only**, and a transient refusal notice for every tap that cannot begin.
+- **Zoom** = ephemeral `GameScreen` state; `tileSize = max(1, round(fitToWidthBase × zoomFactor))` in `MapView`; deliberately **no `transform: scale`** because hit-testing reads parent-space `locationX/locationY`; controls in the action bar.
+- **Through-wall fix** = a deliberate, spec-delta'd **engine** FOV change (diagonal-gap occlusion) plus remembered **floor items** drawn dimmed (monsters stay hidden); AI is provably unchanged because `chase`'s `seesPlayer` (`computeFov`, radius 8) is subsumed by its `inRange` (Chebyshev 8).
+
+**Trade-offs:** The FOV tightening shrinks explored masks (seeded expectations update) and slightly changes when travel/ranged see a monster; fractional zoom needs integer rounding. OpenSpec's MODIFIED-scenario validator requires preserving existing scenario names verbatim, so a semantically-narrowed scenario keeps its old (now imprecise) name.
+
+**Revisit:** Never for the boundary approach — the engine change is pure and spec-delta'd, and clients stay `@engine`-only. Revisit the FOV algorithm if the corner-occlusion pass over/under-blocks diagonals in play.
+
+---
+
 ## 2026-10-06 — Ephemeral client modes are mutually exclusive; a review-requested safety check must amend the spec delta it narrows
 
 **Context:** Re-review of the `travel-and-repeat-move` fix round. Two convention gaps surfaced. (1) `GameScreen.toggleTargetMode` clears `travelMode` but does **not** stop an in-progress auto-travel, so ranged target mode and a running travel scheduler can be live at once — contradicting design D7/`decisions.md`'s "the two ephemeral map-tap modes are mutually exclusive". (2) The review-requested `travelStartBlocked` (refuse to start travel while a monster is already visible/adjacent) narrows the ADDED requirement "a tap on an explored, passable, unoccupied tile SHALL ... begin auto-travel" without any spec-delta caveat or scenario; `openspec validate --strict` is structural and does not catch it.
@@ -809,4 +872,14 @@
 **Trade-offs:** Adds a new engine event type (`waited`) rather than overloading `noop` (which by contract never advances), so it grows engine surface for a client feature. The component-level gating is not render-tested (no RN render-test environment), so only the pure helpers are unit-tested.
 
 **Revisit:** Add component tests for the ActionBar/ObjectInfo gating if a render-test environment is ever added. If other turn-passing abilities (defend/rest) land, generalize the `wait` command rather than adding parallel pass-turn commands.
+
+---
+
+## 2026-10-06 — Normative home of the travel pre-start danger gate is `ui/input-mapping`, not `ui/auto-travel`
+
+**Context:** Planning review of `auto-travel-reliability`, which narrows the "travel refuses to start while a living monster is already visible" gate to orthogonally-adjacent monsters only. The clause is enforced in `src/ui/logic/travel.ts:travelStartBlocked`, but it is *specified* in the live `ui/input-mapping` spec, requirement "Tapping the map in travel mode selects an explored destination" and its scenario "Travel does not begin while a monster is already visible or adjacent" (added by the archived `travel-and-repeat-move` change, which added a `ui/input-mapping` delta for exactly that reason). `ui/auto-travel` only ever held the post-step danger stop. The plan's changed-capabilities list names only `ui/auto-travel`, so applying it would leave `ui/input-mapping` asserting the old behavior.
+
+**Choice / rule:** A change to the pre-start travel gate MUST edit the `ui/input-mapping` requirement that states it (MODIFIED delta + scenario update); it may additionally restate the adjacency-only rule under `ui/auto-travel`, but `ui/input-mapping` is authoritative for the tap-to-begin contract. More generally: locate the capability whose *live spec text* encodes a behavior before finalizing the Modified-Capabilities set — the file where the code lives is not the answer. `openspec validate --strict` is structural and does not detect a contradiction between two capabilities' requirements.
+
+**Revisit:** If the pre-start gate is ever moved wholesale into an auto-travel-owned requirement, delete the `ui/input-mapping` clause rather than leaving a duplicate. Until then, both must be kept in sync.
 

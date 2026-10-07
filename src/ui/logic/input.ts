@@ -3,7 +3,7 @@
  * `expo-glyph-renderer`, design D3; task 4.2; extended by
  * `core-gameplay-loop` task 9.2 / design D10; directional attack removed and a
  * ranged target-mode key added by `mobile-client-playability` design D2/D7,
- * tasks 5.2/5.3/5.4).
+ * tasks 5.2/5.3/5.4; zoom keys added by `map-zoom` design D6, task 3.3).
  *
  * Framework-free on purpose — no React, no React Native, no DOM — so the mapping
  * can be unit-tested under the node Vitest environment (design D8). The hook
@@ -15,9 +15,9 @@
  *    descend, wait) — all of which flow through `dispatch`. There is deliberately
  *    no directional attack mapping: melee is bump-to-attack (design D2).
  *  - {@link actionForKey} maps a key to a named non-command action (save / resume
- *    / new-run / toggle-target-mode), which the client handles through its save
- *    path or presentation state. Keeping actions distinct from commands means the
- *    command path stays exhaustive.
+ *    / new-run / toggle-target-mode / zoom-in / zoom-out), which the client
+ *    handles through its save path or presentation state. Keeping actions
+ *    distinct from commands means the command path stays exhaustive.
  *  - {@link directionForDelta} resolves a tap's `from`/`to` tile delta to a
  *    cardinal `Direction` (or `undefined`), so map taps are testable without a
  *    renderer.
@@ -56,14 +56,22 @@ export type InputAction =
   | 'save'
   | 'resume'
   | 'new-run'
-  | 'toggle-target-mode';
+  | 'toggle-target-mode'
+  | 'zoom-in'
+  | 'zoom-out';
 
-/** Keys that resolve to the save / resume / new-run / target-mode client actions. */
+/** Keys that resolve to the save / resume / new-run / target-mode / zoom client actions. */
 export const ACTION_KEYS: Readonly<Record<string, InputAction>> = {
   s: 'save',
   r: 'resume',
   n: 'new-run',
   f: 'toggle-target-mode',
+  // `+` needs Shift on most layouts, which reports `key === '+'`; `=` is the
+  // unshifted key on the same physical key, so both zoom in (change `map-zoom`,
+  // design D6; task 3.3). `-` (and its numpad form) zooms out.
+  '+': 'zoom-in',
+  '=': 'zoom-in',
+  '-': 'zoom-out',
 };
 
 /**
@@ -93,7 +101,7 @@ export function commandForKey(key: string): Command | undefined {
 
 /**
  * Resolves a `KeyboardEvent.key` to a named client action (save/resume/new-run/
- * target-mode), or `undefined`. Pure, so `useKeyboardInput` stays a thin adapter.
+ * target-mode/zoom), or `undefined`. Pure, so `useKeyboardInput` stays a thin adapter.
  */
 export function actionForKey(key: string): InputAction | undefined {
   return ACTION_KEYS[key];

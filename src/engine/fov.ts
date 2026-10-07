@@ -55,6 +55,9 @@ const OCTANTS: readonly (readonly [number, number, number, number])[] = [
  *   is seen rather than hidden by itself.
  * - A non-passable tile blocks tiles behind it but is itself marked visible; its
  *   shadow is recursed into so the next interval is scanned separately.
+ * - A tile seen only through a **two-wall diagonal corner** (both orthogonal
+ *   tiles sharing that corner non-passable) is removed by a restrictive corner
+ *   pass after the shadowcast; the pass only ever removes tiles.
  * - An origin outside the grid returns an all-false array and does not throw.
  *
  * Pure: returns a fresh array and never mutates `grid`. Same inputs ⇒ same
@@ -81,7 +84,125 @@ export function computeFov(
     castLight(grid, visible, origin, radius, 1, 0, 1, xx, xy, yx, yy);
   }
 
+  removeCornerLeaks(grid, visible, origin, radius);
+
   return visible;
+}
+
+/** The eight single-step neighbour offsets, in a fixed order (determinism). */
+const NEIGHBOUR_OFFSETS: readonly (readonly [number, number])[] = [
+  [-1, 0],
+  [1, 0],
+  [0, -1],
+  [0, 1],
+  [-1, -1],
+  [1, -1],
+  [-1, 1],
+  [1, 1],
+];
+
+/**
+ * Restrictive corner pass (change `fix-fov-and-remembered-items`, design D1).
+ *
+ * The shadowcast above is permissive: it can mark a tile visible through a
+ * diagonal gap between two non-passable tiles (a two-wall corner). This pass
+ * removes exactly those tiles and never adds any, so it cannot reveal anything
+ * the shadowcast did not:
+ *
+ * 1. Flood from the origin through **passable, already-visible** tiles within
+ *    the same Chebyshev radius. A 4-neighbour step to such a tile is always
+ *    allowed; a diagonal step is allowed only when at least one of the two
+ *    orthogonal tiles sharing the corner is passable ("no squeezing through a
+ *    corner"). The flood seeds from the origin even when it is non-passable,
+ *    because the origin is always visible, but it only ever lands on passable
+ *    tiles — propagating from or into a wall would re-admit the corner through
+ *    the wall's orthogonal neighbour.
+ * 2. Keep a shadowcast-visible tile only if it is the origin, a tile reached by
+ *    the flood, or a non-passable tile 4-adjacent to a flooded tile (so blocking
+ *    walls, and the walls lining a seen corridor, stay visible).
+ *
+ * `visible` is the freshly created array from `computeFov` (never a caller's
+ * array) and is updated in place. The grid is only read.
+ */
+function removeCornerLeaks(
+  grid: Grid,
+  visible: boolean[],
+  origin: Position,
+  radius: number,
+): void {
+  const { width, height } = grid;
+  const total = width * height;
+  const originIndex = origin.y * width + origin.x;
+
+  const reachable = new Array<boolean>(total).fill(false);
+  reachable[originIndex] = true;
+  const queue: number[] = [originIndex];
+
+  // `queue` only grows, so a head index walks it without shifting.
+  for (let head = 0; head < queue.length; head++) {
+    const index = queue[head];
+    const currentX = index % width;
+    const currentY = Math.floor(index / width);
+
+    for (const [dx, dy] of NEIGHBOUR_OFFSETS) {
+      const nextX = currentX + dx;
+      const nextY = currentY + dy;
+      if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+
+      const nextIndex = nextY * width + nextX;
+      if (reachable[nextIndex]) continue;
+      // The flood may only land on a passable, shadowcast-visible tile within
+      // the radius.
+      if (!visible[nextIndex] || tileBlocks(grid, nextX, nextY)) continue;
+      if (
+        Math.max(Math.abs(nextX - origin.x), Math.abs(nextY - origin.y)) > radius
+      ) {
+        continue;
+      }
+      // A diagonal step must not squeeze between two non-passable tiles.
+      if (dx !== 0 && dy !== 0) {
+        const cornerPassable =
+          !tileBlocks(grid, currentX + dx, currentY) ||
+          !tileBlocks(grid, currentX, currentY + dy);
+        if (!cornerPassable) continue;
+      }
+
+      reachable[nextIndex] = true;
+      queue.push(nextIndex);
+    }
+  }
+
+  for (let index = 0; index < total; index++) {
+    // Keep the origin, every flooded tile, and anything not shadowcast-visible.
+    if (!visible[index] || index === originIndex || reachable[index]) continue;
+
+    const x = index % width;
+    const y = Math.floor(index / width);
+    // A non-passable tile 4-adjacent to a flooded tile stays visible (the wall
+    // itself, and corridor walls). Every other non-reached tile is a leak.
+    if (
+      tileBlocks(grid, x, y) &&
+      hasReachableOrthogonal(reachable, width, height, x, y)
+    ) {
+      continue;
+    }
+    visible[index] = false;
+  }
+}
+
+/** True when any in-bounds 4-neighbour of `(x, y)` was reached by the flood. */
+function hasReachableOrthogonal(
+  reachable: boolean[],
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+): boolean {
+  if (x > 0 && reachable[y * width + x - 1]) return true;
+  if (x + 1 < width && reachable[y * width + x + 1]) return true;
+  if (y > 0 && reachable[(y - 1) * width + x]) return true;
+  if (y + 1 < height && reachable[(y + 1) * width + x]) return true;
+  return false;
 }
 
 /**

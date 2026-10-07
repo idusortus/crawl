@@ -144,6 +144,74 @@ describe('computeFov — walls block sight', () => {
   });
 });
 
+describe('computeFov — diagonal-gap occlusion', () => {
+  /**
+   * A 4x4 floor with a wall at (2,1). When `bothWalls` is set, (1,2) is also a
+   * wall, forming the two-wall diagonal corner that the observer at (1,1) would
+   * otherwise see (2,2) through:
+   *
+   *   y=0:  . . . .
+   *   y=1:  . o # .
+   *   y=2:  . # . .   (`#` at (1,2) only when bothWalls)
+   *   y=3:  . . . .
+   */
+  function cornerGrid(bothWalls: boolean): Grid {
+    return createGrid([
+      [true, true, true, true],
+      [true, true, false, true],
+      [true, bothWalls ? false : true, true, true],
+      [true, true, true, true],
+    ]);
+  }
+
+  it('does not mark a tile seen only through a two-wall diagonal corner', () => {
+    const grid = cornerGrid(true);
+    const visible = computeFov(grid, at(1, 1), 3);
+
+    // Both corner walls are themselves visible, but the tile beyond the gap is
+    // not: its only sight line squeezes between the two non-passable tiles.
+    expect(visible[indexOf(grid, at(2, 1))]).toBe(true);
+    expect(visible[indexOf(grid, at(1, 2))]).toBe(true);
+    expect(visible[indexOf(grid, at(2, 2))]).toBe(false);
+  });
+
+  it('keeps a tile seen diagonally past the end of a single wall', () => {
+    // With only the (2,1) wall, exactly one flanking tile at the corner
+    // ((1,2)) is passable, so the diagonal sight line to (2,2) is retained.
+    const grid = cornerGrid(false);
+    const visible = computeFov(grid, at(1, 1), 3);
+
+    expect(visible[indexOf(grid, at(2, 1))]).toBe(true); // wall end
+    expect(visible[indexOf(grid, at(2, 2))]).toBe(true); // past the wall end
+  });
+
+  it('marks the whole open diagonal area visible', () => {
+    const grid = createGrid(
+      Array.from({ length: 5 }, () => new Array<boolean>(5).fill(true)),
+    );
+    const visible = computeFov(grid, at(2, 2), 2);
+
+    for (const [x, y] of [
+      [0, 0],
+      [4, 4],
+      [0, 4],
+      [4, 0],
+    ]) {
+      expect(visible[indexOf(grid, at(x, y))]).toBe(true);
+    }
+  });
+
+  it('is deterministic and does not mutate the grid when a corner is removed', () => {
+    const grid = cornerGrid(true);
+    const snapshot = JSON.stringify(grid);
+    const first = computeFov(grid, at(1, 1), 3);
+    const second = computeFov(grid, at(1, 1), 3);
+
+    expect(second).toEqual(first);
+    expect(JSON.stringify(grid)).toBe(snapshot);
+  });
+});
+
 describe('computeFov — out of bounds', () => {
   const grid = createGrid([
     [true, true],

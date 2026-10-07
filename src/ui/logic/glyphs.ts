@@ -22,13 +22,13 @@
  *    crashed on.
  *  - Terrain is a documented pair: `.` for passable floor, `#` for a wall.
  *  - Visibility is a three-way treatment (visible > explored > unseen); unseen
- *    tiles reveal nothing, so their glyph is the blank string. Monsters and
- *    floor items render only when visible, but the stairs are a remembered
- *    terrain feature: a remembered (explored, not visible) stairs tile keeps
- *    showing {@link STAIRS_GLYPH} (dimmed) so it stays findable after it leaves
- *    field of view (change `mobile-client-playability`, design D5; task 8.1).
+ *    tiles reveal nothing, so their glyph is the blank string. Monsters render
+ *    only when visible. A floor item is a remembered feature too: an explored-
+ *    but-not-visible tile holding one keeps showing the item's pack glyph
+ *    (dimmed), just like the stairs keep {@link STAIRS_GLYPH} (dimmed).
  */
 
+import { isFeature as isItemEntity } from '@engine';
 import type { Entity, LoadedPack, Position } from '@engine';
 
 import { colors } from '../theme/colors';
@@ -167,14 +167,16 @@ export interface TileRenderInput {
  *
  * Unseen tiles short-circuit: no glyph and the unseen background, revealing
  * nothing about terrain or occupants. On a seen tile an occupant's glyph is
- * drawn only while the tile is currently `visible`, so an explored-but-not-
- * visible tile shows no monster or item that has since left FOV. The stairs are
- * the one exception: they are a remembered terrain feature, so the stairs glyph
- * is drawn whenever the tile is seen — visible or merely explored — dimmed in
- * the explored-only case (change `mobile-client-playability`, design D5).
+ * drawn while the tile is currently `visible`. On an explored-but-not-visible
+ * tile a **floor item**'s glyph is still drawn (dimmed) so remembered features
+ * stay findable, while a monster is hidden and only the flat terrain shows. The
+ * stairs are likewise remembered, so the stairs glyph is drawn whenever the
+ * tile is seen — visible or merely explored — dimmed in the explored-only case
+ * (change `mobile-client-playability`, design D5).
  *
  * Precedence on a visible tile is entity over stairs over terrain: a monster or
- * item standing on the stairs tile is what the player must see.
+ * item standing on the stairs tile is what the player must see. On a remembered
+ * tile a floor item likewise takes precedence over remembered stairs.
  */
 export function tileRender(input: TileRenderInput): TileRender {
   const { passable, visible, explored, entity, pos, stairs, pack, isPlayer } =
@@ -198,6 +200,13 @@ export function tileRender(input: TileRenderInput): TileRender {
   let glyph = terrainGlyph(passable);
   let isFeature = false;
   if (visible && entity !== undefined) {
+    // A visible occupant (monster, item, or player) wins over stairs/terrain.
+    glyph = entityGlyph(pack, entity);
+    isFeature = true;
+  } else if (!visible && entity !== undefined && isItemEntity(entity)) {
+    // A remembered floor item stays drawn (dimmed), taking precedence over
+    // remembered stairs to mirror the visible-tile rule. Only the item
+    // discriminator qualifies, so monsters remain hidden on remembered tiles.
     glyph = entityGlyph(pack, entity);
     isFeature = true;
   } else if (onStairs) {

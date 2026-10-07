@@ -65,6 +65,9 @@ describe('commandForKey', () => {
     expect(commandForKey('a')).toBeUndefined();
     // The ranged target-mode key is an action, not a command.
     expect(commandForKey('f')).toBeUndefined();
+    // The zoom keys are actions, not commands either.
+    expect(commandForKey('+')).toBeUndefined();
+    expect(commandForKey('-')).toBeUndefined();
   });
 });
 
@@ -77,6 +80,12 @@ describe('actionForKey', () => {
 
   it('maps the ranged target-mode key to its action', () => {
     expect(actionForKey('f')).toBe('toggle-target-mode');
+  });
+
+  it('maps the zoom keys to their actions ("=" is the unshifted "+")', () => {
+    expect(actionForKey('+')).toBe('zoom-in');
+    expect(actionForKey('=')).toBe('zoom-in');
+    expect(actionForKey('-')).toBe('zoom-out');
   });
 
   it('returns undefined for a key that is not an action', () => {

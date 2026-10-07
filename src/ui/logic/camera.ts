@@ -96,3 +96,28 @@ export function appliedAxisOffset(
     ? (viewportAxis - fittedAxis) / 2
     : cameraOffset;
 }
+
+/**
+ * Resolves a touch coordinate on one axis to the tile index drawn under it
+ * (change `map-zoom`, design D7; task 1.3).
+ *
+ * This is the exact conversion `MapView` applied inline before zoom
+ * (`floor((locationAxis - appliedOffset) / tileSize)`), extracted so the zoomed
+ * tap round-trip can be unit-tested against the real code. The caller supplies
+ * the dp offset actually applied to the map origin on that axis
+ * ({@link appliedAxisOffset}) and the current tile side length, so both the
+ * camera translation and a zoomed `tileSize` are handled without a second copy
+ * of the formula.
+ *
+ * `tileSize` is assumed positive — `MapView` derives it as `max(1, …)` (design
+ * D2) — so the division is always finite. The result is an unclamped tile index
+ * (it may be negative or past the grid in the centring margin); callers bound it
+ * against the grid before use.
+ */
+export function tileAt(
+  locationAxis: number,
+  appliedOffset: number,
+  tileSize: number,
+): number {
+  return Math.floor((locationAxis - appliedOffset) / tileSize);
+}

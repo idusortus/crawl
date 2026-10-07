@@ -299,6 +299,80 @@ describe('tileRender — stairs (change core-gameplay-loop, task 9.1)', () => {
   });
 });
 
+describe('tileRender — remembered items (change fix-fov-and-remembered-items, task 2.2)', () => {
+  const base = { passable: true, pack };
+  const REMEMBERED_STAIRS: Position = { x: 3, y: 2 };
+
+  /** An item entity carries the `item: true` discriminator `isFeature` reads. */
+  function itemEntity(kind: string, pos: Position = POS): Entity {
+    return { id: `item-${kind}`, kind, pos, item: true };
+  }
+
+  it('draws a remembered floor item dimmed on an explored-but-not-visible tile', () => {
+    const item = pack.pack.items[0];
+    const remembered = tileRender({
+      ...base,
+      visible: false,
+      explored: true,
+      entity: itemEntity(item.id),
+    });
+
+    expect(remembered.glyph).toBe(item.glyph);
+    expect(remembered.glyph).not.toBe(FLOOR_GLYPH);
+    // The dimmed explored token, distinct from the full-strength visible color.
+    expect(remembered.color).toBe(visibilityStyle(false, true));
+    expect(remembered.color).not.toBe(
+      tileRender({
+        ...base,
+        visible: true,
+        explored: true,
+        entity: itemEntity(item.id),
+      }).color,
+    );
+  });
+
+  it('hides a monster on an explored-but-not-visible tile (flat terrain)', () => {
+    const goblin = pack.pack.monsters[0];
+    const remembered = tileRender({
+      ...base,
+      visible: false,
+      explored: true,
+      entity: entity(goblin.id),
+    });
+
+    expect(remembered.glyph).toBe(FLOOR_GLYPH);
+    expect(remembered.glyph).not.toBe(goblin.glyph);
+  });
+
+  it('keeps a remembered stairs tile drawn as ">" dimmed', () => {
+    const remembered = tileRender({
+      ...base,
+      visible: false,
+      explored: true,
+      pos: REMEMBERED_STAIRS,
+      stairs: REMEMBERED_STAIRS,
+    });
+
+    expect(remembered.glyph).toBe(STAIRS_GLYPH);
+    expect(remembered.color).toBe(visibilityStyle(false, true));
+  });
+
+  it('prefers a remembered item over remembered stairs on a shared tile', () => {
+    const item = pack.pack.items[0];
+    const remembered = tileRender({
+      ...base,
+      visible: false,
+      explored: true,
+      entity: itemEntity(item.id, REMEMBERED_STAIRS),
+      pos: REMEMBERED_STAIRS,
+      stairs: REMEMBERED_STAIRS,
+    });
+
+    expect(remembered.glyph).toBe(item.glyph);
+    expect(remembered.glyph).not.toBe(STAIRS_GLYPH);
+  });
+});
+
 describe('isTerminal (change core-gameplay-loop, task 9.1)', () => {
   it('is false while the run is playing', () => {
     expect(isTerminal('playing')).toBe(false);

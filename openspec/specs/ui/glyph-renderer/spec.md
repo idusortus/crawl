@@ -40,7 +40,7 @@ The renderer SHALL draw the player and any entities occupying a visible tile, us
 
 ### Requirement: Visibility states are visually distinct
 
-The renderer SHALL distinguish, for each tile, three states — currently visible, explored but not currently visible, and never seen — using different visual treatments. A never-seen tile SHALL NOT reveal terrain or entity glyphs.
+The renderer SHALL distinguish, for each tile, three states — currently visible, explored but not currently visible, and never seen — using different visual treatments. An explored-but-not-currently-visible tile SHALL show its terrain dimmed and SHALL NOT show a monster; a remembered floor item MAY be shown dimmed (see the drawing requirement below). A never-seen tile SHALL NOT reveal terrain or entity glyphs.
 
 #### Scenario: Visible tile is drawn at full strength
 
@@ -50,7 +50,7 @@ The renderer SHALL distinguish, for each tile, three states — currently visibl
 #### Scenario: Explored tile is drawn dimmed
 
 - **WHEN** a tile has been explored but is not currently visible
-- **THEN** its terrain is drawn in a distinct dimmed treatment and no current entity is shown
+- **THEN** its terrain is drawn in a distinct dimmed treatment, no current monster is shown, and any floor item is drawn dimmed
 
 #### Scenario: Unseen tile reveals nothing
 
@@ -88,7 +88,7 @@ The renderer SHALL show the current dungeon depth and the player's current hit p
 
 ### Requirement: Monsters, items, and stairs are drawn from state using pack glyphs
 
-The renderer SHALL draw monsters, floor items, and the stairs on visible tiles, using the glyph supplied by the loaded content pack for each entity kind and a distinct `STAIRS_GLYPH` (e.g. `'>'`) for stairs (terrain has no pack glyph), with the player distinguishable from all of them. The stairs glyph SHALL also be drawn on an explored-but-not-currently-visible tile that holds the stairs, so a remembered stairs tile remains findable; monsters and floor items SHALL remain hidden on explored-but-not-visible tiles. `tileRender` SHALL accept a stairs input and the map view SHALL pass the level's stairs position.
+The renderer SHALL draw monsters, floor items, and the stairs on visible tiles, using the glyph supplied by the loaded content pack for each entity kind and a distinct `STAIRS_GLYPH` (e.g. `'>'`) for stairs (terrain has no pack glyph), with the player distinguishable from all of them. The stairs glyph SHALL also be drawn on an explored-but-not-currently-visible tile that holds the stairs, and a floor item's glyph SHALL also be drawn on an explored-but-not-currently-visible tile that holds a floor item, each in the dimmed explored treatment, so remembered features remain findable; monsters SHALL remain hidden on explored-but-not-visible tiles. `tileRender` SHALL accept a stairs input and the map view SHALL pass the level's stairs position.
 
 #### Scenario: A visible monster is drawn
 
@@ -110,10 +110,15 @@ The renderer SHALL draw monsters, floor items, and the stairs on visible tiles, 
 - **WHEN** the stairs tile has been explored but is not currently visible
 - **THEN** the tile still shows `STAIRS_GLYPH` (dimmed), distinct from ordinary remembered floor
 
+#### Scenario: A remembered item stays drawn dimmed
+
+- **WHEN** a floor item sits on a tile that has been explored but is not currently visible
+- **THEN** the tile shows the glyph the pack declares for that item kind, in the dimmed explored treatment
+
 #### Scenario: Occupants on explored-but-not-visible tiles are not shown
 
 - **WHEN** a tile has been explored but is not currently visible and holds a monster or floor item
-- **THEN** no monster or item is shown as an occupant on it (the flat terrain is shown), except that the stairs tile still shows `STAIRS_GLYPH`
+- **THEN** no monster is shown as an occupant on it (the flat terrain is shown), a floor item is shown dimmed, and the stairs tile still shows `STAIRS_GLYPH`
 
 ### Requirement: A game-over surface renders from the terminal state
 
@@ -136,21 +141,21 @@ The renderer SHALL render the game-over surface from the terminal run status, pr
 
 ### Requirement: The map viewport follows the player
 
-The renderer SHALL size map tiles from the measured viewport width so the full level width is visible on screen (fit-to-width), rather than overflowing the screen horizontally. The rendered tile side length SHALL be `floor(measuredViewportWidth / grid.width)` (at least 1), uniform across the whole grid, and SHALL adapt when the viewport is re-measured. With the full width visible, the horizontal camera offset SHALL be zero. The renderer SHALL still position the map so the player's tile remains visible at all times and SHALL use a clamped, non-animating vertical camera when the fitted map is taller than the viewport; when the map is not taller than the viewport it SHALL be centered (zero vertical offset). The camera SHALL be a deterministic function of the player position and the measured viewport size.
+At the default 1× zoom level, the renderer SHALL size map tiles from the measured viewport width so the full level width is visible on screen (fit-to-width), rather than overflowing the screen horizontally. The rendered tile side length at 1× SHALL be `floor(measuredViewportWidth / grid.width)` (at least 1), uniform across the whole grid, and SHALL adapt when the viewport is re-measured. With the full width visible at 1×, the horizontal camera offset SHALL be zero. At a non-default zoom level the tile side length SHALL be that 1× base multiplied by the current zoom factor (see the `ui/map-zoom` capability), so the full-width guarantee no longer applies at non-default zoom. At every zoom the renderer SHALL position the map so the player's tile remains visible at all times and SHALL use a clamped, non-animating vertical camera when the fitted map is taller than the viewport; when the map is not taller than the viewport it SHALL be centered (zero vertical offset). The camera SHALL be a deterministic function of the player position, the measured viewport size, and the current zoom.
 
 #### Scenario: The full level width is visible
 
-- **WHEN** the game screen renders a 40-tile-wide level on a phone-width viewport
+- **WHEN** the game screen renders a 40-tile-wide level at the default 1× zoom on a phone-width viewport
 - **THEN** the tile size is derived from the measured width so all 40 columns are on screen and no column overflows past either edge
 
 #### Scenario: Sizing adapts to the measured viewport
 
-- **WHEN** the viewport width changes (for example orientation or window resize)
+- **WHEN** the viewport width changes (for example orientation or window resize) at the default 1× zoom
 - **THEN** the tile size is recomputed so the full level width remains visible
 
 #### Scenario: Moving east keeps the player visible
 
-- **WHEN** the player moves east toward the right edge of a level whose full width is on screen
+- **WHEN** the player moves east toward the right edge of a level whose full width is on screen at 1× zoom
 - **THEN** the player's tile remains within the visible viewport without a horizontal camera translation
 
 #### Scenario: The player's tile stays in view through a sequence of moves
@@ -172,6 +177,11 @@ The renderer SHALL size map tiles from the measured viewport width so the full l
 
 - **WHEN** the viewport has not yet reported its size on the first render
 - **THEN** the map renders without error at a safe default tile size and adopts the fitted size once the viewport is measured
+
+#### Scenario: A zoom factor scales the base tile size
+
+- **WHEN** the map is rendered at a zoom factor other than 1×
+- **THEN** the tile side length is the 1× base size multiplied by that factor and the player's tile remains within the viewport
 
 ### Requirement: The full map is still rendered under the viewport
 

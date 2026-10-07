@@ -2,7 +2,8 @@
  * `ActionBar` — the non-directional gameplay controls (change
  * `expo-glyph-renderer`, design D3; task 4.1; extended by
  * `core-gameplay-loop` task 9.2 / design D10; ranged control added by
- * `mobile-client-playability` tasks 6.1/6.4 / design D7).
+ * `mobile-client-playability` tasks 6.1/6.4 / design D7; zoom-in/out controls
+ * added by `map-zoom` task 3.2 / design D6).
  *
  * Renders the on-screen controls for the core gameplay actions — pickup, the
  * carried consumable list (use-item), the ranged-attack control, and
@@ -39,6 +40,11 @@
  * failure lands in the separate non-fatal `saveError` channel. Both are shown as
  * an inline note — the indicator is transient and cleared by the next action,
  * and the error note never hides the game (unlike the fatal pack-load `error`).
+ *
+ * Travel-refusal feedback (change `auto-travel-reliability`, design D3; task
+ * 3.2): the optional `travelNotice` string renders in the same inline-note slot
+ * as the save feedback (after a save error, before the "Saved" indicator), so a
+ * tap that cannot begin travel is visible without a new surface or dependency.
  */
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -46,6 +52,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useGameContext } from '../providers/GameProvider';
 import { hasRangedWeapon, isRangedWeapon } from '../logic/ranged';
 import { floorItemAt, isOnStairs } from '../logic/objects';
+import { zoomFactor } from '../logic/zoom';
 import { colors } from '../theme/colors';
 
 /** One on-screen action button, described declaratively. */
@@ -77,6 +84,22 @@ export interface ActionBarProps {
    * player is auto-walking the control would otherwise show no active state.
    */
   travelInProgress: boolean;
+  /**
+   * A brief refusal message raised when a travel tap cannot begin travel
+   * (change `auto-travel-reliability`, design D3; task 3.2), or `undefined`.
+   * Presentation-only: never part of `GameState` or the save.
+   */
+  travelNotice?: string;
+  /**
+   * The current zoom level: an index into the pure `logic/zoom` ladder (change
+   * `map-zoom`, design D1/D6; task 3.2). Presentation-only — it comes from
+   * `GameScreen`'s ephemeral state and never touches `GameState`.
+   */
+  zoomLevel: number;
+  /** Steps the zoom level up one (a no-op at the maximum bound). */
+  onZoomIn: () => void;
+  /** Steps the zoom level down one (a no-op at the minimum bound). */
+  onZoomOut: () => void;
 }
 
 export function ActionBar({
@@ -85,6 +108,10 @@ export function ActionBar({
   travelMode,
   onToggleTravelMode,
   travelInProgress,
+  travelNotice,
+  zoomLevel,
+  onZoomIn,
+  onZoomOut,
 }: ActionBarProps) {
   const { dispatch, save, resume, hasSave, state, pack, savedIndicator, saveError } =
     useGameContext();
@@ -173,6 +200,32 @@ export function ActionBar({
             <Text style={styles.label}>{button.label}</Text>
           </Pressable>
         ))}
+        {/* Map zoom controls (change `map-zoom`, design D6; task 3.2): two
+            buttons reusing the action-bar styling plus the current level, wired
+            to the pure ladder steppers. A press at either bound is a no-op. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Zoom out"
+          onPress={onZoomOut}
+          style={({ pressed }) => [
+            styles.button,
+            pressed === true && styles.pressed,
+          ]}
+        >
+          <Text style={styles.label}>−</Text>
+        </Pressable>
+        <Text style={styles.zoomLevel}>Zoom {zoomFactor(zoomLevel)}×</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Zoom in"
+          onPress={onZoomIn}
+          style={({ pressed }) => [
+            styles.button,
+            pressed === true && styles.pressed,
+          ]}
+        >
+          <Text style={styles.label}>+</Text>
+        </Pressable>
       </View>
       <View style={styles.row}>
         {usableItems.length === 0 ? (
@@ -198,6 +251,8 @@ export function ActionBar({
         <Text style={styles.saveError}>
           Save failed: {saveError.message}
         </Text>
+      ) : travelNotice !== undefined ? (
+        <Text style={styles.travelNotice}>{travelNotice}</Text>
       ) : savedIndicator ? (
         <Text style={styles.saved}>Saved</Text>
       ) : null}
@@ -236,12 +291,24 @@ const styles = StyleSheet.create({
     color: colors.visible,
     fontSize: 15,
   },
+  zoomLevel: {
+    color: colors.explored,
+    fontSize: 15,
+    alignSelf: 'center',
+    paddingHorizontal: 4,
+  },
   empty: {
     color: colors.explored,
     fontSize: 14,
   },
   saved: {
     color: colors.player,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingTop: 2,
+  },
+  travelNotice: {
+    color: colors.entity,
     fontSize: 13,
     textAlign: 'center',
     paddingTop: 2,

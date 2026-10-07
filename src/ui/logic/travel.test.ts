@@ -82,9 +82,9 @@ describe('planTravel', () => {
     [true, true, true],
   ]);
 
-  it('plans a path over explored passable tiles', () => {
+  it('plans a path over explored passable tiles, with the destination as goal', () => {
     const explored = new Array<boolean>(9).fill(true);
-    const route = planTravel(
+    const plan = planTravel(
       open3x3,
       explored,
       [],
@@ -92,10 +92,13 @@ describe('planTravel', () => {
       { x: 2, y: 2 },
       PLAYER_ID,
     );
-    expect(route).toEqual(['east', 'east', 'south', 'south']);
+    expect(plan).toEqual({
+      route: ['east', 'east', 'south', 'south'],
+      goal: { x: 2, y: 2 },
+    });
   });
 
-  it('is deterministic: the same inputs yield the same pinned route', () => {
+  it('is deterministic: the same inputs yield the same pinned plan', () => {
     const explored = new Array<boolean>(9).fill(true);
     const first = planTravel(
       open3x3,
@@ -114,13 +117,16 @@ describe('planTravel', () => {
       PLAYER_ID,
     );
     expect(second).toEqual(first);
-    expect(first).toEqual(['east', 'east', 'south', 'south']);
+    expect(first).toEqual({
+      route: ['east', 'east', 'south', 'south'],
+      goal: { x: 2, y: 2 },
+    });
   });
 
   it("treats the player's own tile as the traversable start", () => {
     const explored = new Array<boolean>(9).fill(true);
     const player = monster(PLAYER_ID, { x: 0, y: 0 });
-    const route = planTravel(
+    const plan = planTravel(
       open3x3,
       explored,
       [player],
@@ -128,7 +134,10 @@ describe('planTravel', () => {
       { x: 2, y: 2 },
       PLAYER_ID,
     );
-    expect(route).toEqual(['east', 'east', 'south', 'south']);
+    expect(plan).toEqual({
+      route: ['east', 'east', 'south', 'south'],
+      goal: { x: 2, y: 2 },
+    });
   });
 
   it('does not route through unexplored tiles', () => {
@@ -168,7 +177,7 @@ describe('planTravel', () => {
       [true, true, true],
     ]);
     const explored = new Array<boolean>(9).fill(true);
-    const route = planTravel(
+    const plan = planTravel(
       grid,
       explored,
       [],
@@ -176,7 +185,10 @@ describe('planTravel', () => {
       { x: 2, y: 0 },
       PLAYER_ID,
     );
-    expect(route).toEqual(['south', 'east', 'east', 'north']);
+    expect(plan).toEqual({
+      route: ['south', 'east', 'east', 'north'],
+      goal: { x: 2, y: 0 },
+    });
   });
 
   it('does not route through a living occupant when no detour exists', () => {
@@ -198,7 +210,7 @@ describe('planTravel', () => {
   it('routes around a living occupant rather than through it', () => {
     const explored = new Array<boolean>(9).fill(true);
     const blocker = monster('goblin-1', { x: 1, y: 0 });
-    const route = planTravel(
+    const plan = planTravel(
       open3x3,
       explored,
       [blocker],
@@ -206,7 +218,10 @@ describe('planTravel', () => {
       { x: 2, y: 0 },
       PLAYER_ID,
     );
-    expect(route).toEqual(['south', 'east', 'east', 'north']);
+    expect(plan).toEqual({
+      route: ['south', 'east', 'east', 'north'],
+      goal: { x: 2, y: 0 },
+    });
   });
 
   it('rejects a destination that is not explored', () => {
@@ -281,7 +296,64 @@ describe('planTravel', () => {
         { x: 1, y: 1 },
         PLAYER_ID,
       ),
-    ).toEqual([]);
+    ).toEqual({ route: [], goal: { x: 1, y: 1 } });
+  });
+
+  it('routes to the best-approach goal when the destination is unreachable', () => {
+    // A wall at (3,0) splits the row; (4,0) is explored/passable/unoccupied but
+    // unreachable, so travel heads for the nearest reachable tile: (2,0).
+    const corridor = createGrid([[true, true, true, false, true]]);
+    const explored = [true, true, true, true, true];
+    const plan = planTravel(
+      corridor,
+      explored,
+      [],
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      PLAYER_ID,
+    );
+    expect(plan).toEqual({
+      route: ['east', 'east'],
+      goal: { x: 2, y: 0 },
+    });
+  });
+
+  it('breaks a best-approach tie by ascending row-major index', () => {
+    // (2,2) is an explored, passable, unoccupied pocket sealed off by walls, so
+    // it is unreachable. Four reachable tiles tie at Chebyshev distance 2 from
+    // it; the lowest row-major index — (1,0), index 1 — must win.
+    const grid = createGrid([
+      [true, true, true],
+      [true, false, false],
+      [true, false, true],
+    ]);
+    const explored = new Array<boolean>(9).fill(true);
+    const plan = planTravel(
+      grid,
+      explored,
+      [],
+      { x: 0, y: 0 },
+      { x: 2, y: 2 },
+      PLAYER_ID,
+    );
+    expect(plan).toEqual({ route: ['east'], goal: { x: 1, y: 0 } });
+  });
+
+  it('returns undefined when no reachable fallback tile exists', () => {
+    // The destination is traversable but walled off, and the player's only
+    // reachable tile is their own: travel cannot begin.
+    const corridor = createGrid([[true, false, true]]);
+    const explored = [true, true, true];
+    expect(
+      planTravel(
+        corridor,
+        explored,
+        [],
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        PLAYER_ID,
+      ),
+    ).toBeUndefined();
   });
 });
 
@@ -532,13 +604,15 @@ describe('travelStartBlocked', () => {
     ).toBe(true);
   });
 
-  it('blocks travel to start when a living monster is visible in the field of view', () => {
+  it('does not block travel to start for a visible but non-adjacent monster', () => {
+    // Design D2: the pre-start gate is adjacency-only; a merely visible monster
+    // is handled by the post-step `monster-visible` stop in `travelStopReason`.
     const visible = monster('goblin-1', { x: 3, y: 0 });
     expect(
       travelStartBlocked(
         makeState(grid, { x: 0, y: 0 }, { entities: [visible] }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('does not block for an adjacent or visible item (only living occupants count)', () => {

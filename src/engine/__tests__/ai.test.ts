@@ -24,7 +24,8 @@ import {
   resolveBehavior,
 } from '../ai';
 import { entityHp, MELEE_DAMAGE_KIND, resolveDamage } from '../combat';
-import { createGrid } from '../grid';
+import { computeFov } from '../fov';
+import { createGrid, indexOf } from '../grid';
 import { createRng, rngFromState } from '../rng';
 import type { Entity, GameEvent, GameState, Grid, Position } from '../types';
 
@@ -272,6 +273,69 @@ describe('chase behavior — no pass-through', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Tightened FOV must not change monster awareness (change
+// `fix-fov-and-remembered-items`, task 3.1)
+//
+// `chase` is aware when `seesPlayer || inRange`, where
+// `inRange = chebyshev(monster, player) <= DEFAULT_BEHAVIOR_RANGE (8)`. The FOV
+// change only ever *removes* visibility, and no visibility can exceed Chebyshev
+// radius 8, so within range `seesPlayer` is subsumed by `inRange` and awareness
+// cannot change. These tests pin that: a chaser whose player is occluded — so
+// `computeFov` reports the player hidden — still acts when within range.
+// ---------------------------------------------------------------------------
+
+describe('chase behavior — awareness is unchanged by the tightened FOV', () => {
+  it('still steps toward a hidden player that is within range', () => {
+    // A single wall at (3,1) sits directly between the monster at (1,1) and the
+    // player at (4,1): the wall is seen, the tile directly behind it is not.
+    // Chebyshev distance is 3 (<= 8), so `inRange` alone must drive the chase.
+    const grid = createGrid([
+      [true, true, true, true, true],
+      [true, true, true, false, true],
+      [true, true, true, true, true],
+    ]);
+    const state = makeState({
+      grid,
+      playerPos: at(4, 1),
+      monsters: [monster('m', at(1, 1))],
+    });
+
+    // Precondition: the player is genuinely hidden from the monster's FOV.
+    expect(computeFov(grid, at(1, 1), 8)[indexOf(grid, at(4, 1))]).toBe(false);
+
+    const result = resolveBehavior('chase')(state, state.entities[1], createRng(7));
+    expect(posOf(result.entities, 'm')).toEqual(at(2, 1));
+    expect(result.events).toEqual([
+      { type: 'moved', entityId: 'm', from: at(1, 1), to: at(2, 1) },
+    ]);
+  });
+
+  it('still attacks an adjacent hidden player (two-wall corner)', () => {
+    // The two-wall corner at (2,1)/(1,2) hides (2,2) from (1,1) — exactly the
+    // diagonal leak the tightened FOV removes. The player is adjacent, so the
+    // monster must attack rather than step, proving awareness does not depend
+    // on sight.
+    const grid = createGrid([
+      [true, true, true, true],
+      [true, true, false, true],
+      [true, false, true, true],
+      [true, true, true, true],
+    ]);
+    const state = makeState({
+      grid,
+      playerPos: at(2, 2),
+      monsters: [monster('m', at(1, 1), { attack: 2 })],
+    });
+
+    expect(computeFov(grid, at(1, 1), 8)[indexOf(grid, at(2, 2))]).toBe(false);
+
+    const result = resolveBehavior('chase')(state, state.entities[1], createRng(7));
+    expect(result.events.map((event) => event.type)).toEqual(['attacked']);
+    expect(posOf(result.entities, 'm')).toEqual(at(1, 1));
+  });
+});
+
 describe('idle behavior', () => {
   it('does nothing and emits nothing', () => {
     const state = makeState({
@@ -451,6 +515,33 @@ describe('advanceMonsters — replay determinism', () => {
 
     const resumed = advanceMonsters(nextState, rngFromState(captured));
     expect(resumed).toEqual(uninterrupted);
+  });
+
+  it('advances a hidden but in-range chaser deterministically', () => {
+    // The same occluded-player grid as the awareness tests: the chaser cannot
+    // see the player, yet `advanceMonsters` still moves it one step closer. The
+    // output is fully determined by the state, so two runs from equal seeded
+    // inputs are identical.
+    const build = () =>
+      makeState({
+        grid: createGrid([
+          [true, true, true, true, true],
+          [true, true, true, false, true],
+          [true, true, true, true, true],
+        ]),
+        playerPos: at(4, 1),
+        monsters: [monster('m', at(1, 1))],
+      });
+
+    const a = advanceMonsters(build(), createRng(0xf0f));
+    const b = advanceMonsters(build(), createRng(0xf0f));
+
+    expect(posOf(a.entities, 'm')).toEqual(at(2, 1));
+    expect(a.entities).toEqual(b.entities);
+    expect(a.events).toEqual([
+      { type: 'moved', entityId: 'm', from: at(1, 1), to: at(2, 1) },
+    ]);
+    expect(b.events).toEqual(a.events);
   });
 });
 

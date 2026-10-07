@@ -85,20 +85,94 @@ function isTraversable(
   return occupant === undefined || occupant.id === playerId;
 }
 
+/** A planned auto-travel route and the tile travel walks toward (design D1). */
+export interface TravelPlan {
+  /** The ordered cardinal steps to dispatch, one per turn. */
+  route: Direction[];
+  /**
+   * The tile the route ends on: the chosen destination when it was reachable, or
+   * the reachable tile that best approaches it otherwise. `startTravel` threads
+   * this into the stop predicate, so reaching the goal reports
+   * `destination-reached` rather than `path-blocked`.
+   */
+  goal: Position;
+}
+
+/** The Chebyshev distance between two tiles (the metric the engine uses). */
+function chebyshev(a: Position, b: Position): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
 /**
- * Plans an auto-travel route from `from` (the player's tile) to `to` as an
- * ordered list of cardinal `Direction`s, or `undefined` when no route exists
- * (design D3; spec `ui/auto-travel` "Travel plans a deterministic path over
- * explored, passable, unoccupied tiles").
+ * The flat index of the visited tile (excluding the player's own start tile)
+ * that best approaches `to`, or `undefined` when the visited set has no tile
+ * besides the start (change `auto-travel-reliability`, design D1).
+ *
+ * "Best" is the smallest Chebyshev distance to `to`; the loop visits indices in
+ * ascending row-major order and only replaces on a strictly smaller distance, so
+ * ties deterministically keep the lowest `y * width + x` index.
+ */
+function bestApproachIndex(
+  grid: Grid,
+  visited: readonly boolean[],
+  fromIndex: number,
+  to: Position,
+): number | undefined {
+  let best: number | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < visited.length; index++) {
+    if (!visited[index] || index === fromIndex) continue;
+    const distance = chebyshev(coordOf(grid, index), to);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = index;
+    }
+  }
+  return best;
+}
+
+/**
+ * Walks the BFS predecessors from `goalIndex` back to `fromIndex` and reverses
+ * them into travel order, or `undefined` on a defensive predecessor miss.
+ */
+function reconstructRoute(
+  prev: readonly number[],
+  arrivedBy: readonly (Direction | undefined)[],
+  fromIndex: number,
+  goalIndex: number,
+): Direction[] | undefined {
+  const route: Direction[] = [];
+  let current = goalIndex;
+  while (current !== fromIndex) {
+    const direction = arrivedBy[current];
+    if (direction === undefined) return undefined; // defensive; unreachable
+    route.push(direction);
+    current = prev[current];
+  }
+  route.reverse();
+  return route;
+}
+
+/**
+ * Plans an auto-travel route from `from` (the player's tile) toward `to`, or
+ * `undefined` when travel cannot begin (change `auto-travel-reliability`, design
+ * D1; spec `ui/auto-travel` "Travel plans a deterministic path over explored,
+ * passable, unoccupied tiles").
  *
  * A breadth-first search runs over tiles that are simultaneously explored,
  * passable, and free of any living entity (the player's own start tile is
  * excepted). The destination must itself be explored, passable, and unoccupied;
- * otherwise no route is planned. Neighbours are visited in the fixed
- * north/east/south/west order and predecessors reconstruct the ordered steps, so
- * the same inputs always yield the same route. When `from` equals `to` the route
- * is empty — a valid route that ends travel immediately with no step. The inputs
- * are never mutated.
+ * otherwise no route is planned. When the destination is reachable, the goal is
+ * the destination and the route is the shortest path to it. When the destination
+ * is traversable but **not** reachable (an explored-mask fragment), the goal is
+ * instead the visited tile that best approaches the destination — minimizing
+ * Chebyshev distance, ties to the lowest row-major index — and the route ends on
+ * that goal; `undefined` is returned only when no such fallback tile exists.
+ *
+ * Neighbours are visited in the fixed north/east/south/west order and
+ * predecessors reconstruct the ordered steps, so the same inputs always yield
+ * the same goal and route. When `from` equals `to` the route is empty — a valid
+ * plan that ends travel immediately with no step. The inputs are never mutated.
  */
 export function planTravel(
   grid: Grid,
@@ -107,9 +181,9 @@ export function planTravel(
   from: Position,
   to: Position,
   playerId: string,
-): Direction[] | undefined {
+): TravelPlan | undefined {
   // Already at the destination: a valid, empty route (design D3 assumption c).
-  if (samePos(from, to)) return [];
+  if (samePos(from, to)) return { route: [], goal: to };
 
   // The destination must itself be explored, passable, and unoccupied.
   if (!isTraversable(grid, explored, entities, to, playerId)) return undefined;
@@ -145,19 +219,17 @@ export function planTravel(
     }
   }
 
-  if (!visited[toIndex]) return undefined;
+  // Reachable: the goal is the destination. Otherwise fall back to the reachable
+  // tile that best approaches it, or refuse when the only visited tile is the
+  // player's own (travel cannot begin).
+  const goalIndex = visited[toIndex]
+    ? toIndex
+    : bestApproachIndex(grid, visited, fromIndex, to);
+  if (goalIndex === undefined) return undefined;
 
-  // Walk predecessors back to the start, then reverse into travel order.
-  const route: Direction[] = [];
-  let current = toIndex;
-  while (current !== fromIndex) {
-    const direction = arrivedBy[current];
-    if (direction === undefined) return undefined; // defensive; unreachable
-    route.push(direction);
-    current = prev[current];
-  }
-  route.reverse();
-  return route;
+  const route = reconstructRoute(prev, arrivedBy, fromIndex, goalIndex);
+  if (route === undefined) return undefined;
+  return { route, goal: coordOf(grid, goalIndex) };
 }
 
 /** Why auto-travel stopped after a step (design D4/D5). */
@@ -177,7 +249,10 @@ export interface TravelStopInput {
   before: GameState;
   /** The step's authoritative result: the new state plus the events it emitted. */
   after: CommandResult;
-  /** The chosen travel destination. */
+  /**
+   * The planned goal: the chosen destination when it was reachable, or the
+   * best-approach tile otherwise (change `auto-travel-reliability`, design D1).
+   */
   destination: Position;
   /**
    * The tile the next planned step would land on, or `undefined` when the route
@@ -233,23 +308,21 @@ function hasVisibleLivingMonster(
 
 /**
  * True when auto-travel must **not begin** from the player's current position
- * because danger is already present: a living monster is orthogonally adjacent
- * or visible in the field of view (change `travel-and-repeat-move`, post-apply
- * review Fix 6).
+ * because danger is already present **and orthogonally adjacent** (change
+ * `auto-travel-reliability`, design D2; spec `ui/input-mapping` "Tapping the map
+ * in travel mode selects an explored destination").
  *
- * Without this pre-start check, `startTravel` would dispatch one step before
- * `travelStopReason` can fire, walking the player toward a monster that was
- * already visible or adjacent. The spec's post-step danger stops are unchanged;
- * this only refuses to start when the danger is present *before* the first step.
- * A missing player is treated as blocked. Pure, so it is unit-tested under node.
+ * The first travel step could walk into a monster already beside the player, so
+ * that case refuses to start. A monster that is merely *visible* but not
+ * adjacent does **not** block the start: travel begins and the post-step
+ * `monster-visible` stop in {@link travelStopReason} halts it after the step
+ * that reveals (or re-reveals) the danger. A missing player is treated as
+ * blocked. Pure, so it is unit-tested under node.
  */
 export function travelStartBlocked(state: GameState): boolean {
   const player = playerOf(state);
   if (player === undefined) return true;
-  if (hasAdjacentLivingMonster(state.entities, player.pos, state.playerId)) {
-    return true;
-  }
-  return hasVisibleLivingMonster(state, player.pos);
+  return hasAdjacentLivingMonster(state.entities, player.pos, state.playerId);
 }
 
 /**
